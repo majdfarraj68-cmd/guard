@@ -17,13 +17,6 @@ jobs:
         run: |
           set -e
           mkdir -p .
-          cat > settings.gradle.kts <<'EOF_FILE'
-          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
-          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
-          rootProject.name = "Guard"
-          include(":app")
-          EOF_FILE
-          mkdir -p .
           cat > build.gradle.kts <<'EOF_FILE'
           plugins {
               id("com.android.application") version "8.5.2" apply false
@@ -34,6 +27,13 @@ jobs:
           cat > gradle.properties <<'EOF_FILE'
           org.gradle.jvmargs=-Xmx2g
           android.nonTransitiveRClass=true
+          EOF_FILE
+          mkdir -p .
+          cat > settings.gradle.kts <<'EOF_FILE'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "Guard"
+          include(":app")
           EOF_FILE
           mkdir -p app
           cat > app/build.gradle.kts <<'EOF_FILE'
@@ -86,6 +86,71 @@ jobs:
               </application>
           </manifest>
           EOF_FILE
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/bg_calm.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <gradient android:angle="270" android:startColor="#0B3D3A" android:centerColor="#14655A" android:endColor="#1F8A6E" />
+          </shape>
+          EOF_FILE
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/bg_card.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#1FFFFFFF" />
+              <stroke android:width="1dp" android:color="#33FFFFFF" />
+              <corners android:radius="24dp" />
+          </shape>
+          EOF_FILE
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/bg_main.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <gradient android:angle="270" android:startColor="#0F2027" android:centerColor="#203A43" android:endColor="#2C5364" />
+          </shape>
+          EOF_FILE
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/bg_warn.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#26FFB300" />
+              <stroke android:width="1dp" android:color="#66FFB300" />
+              <corners android:radius="24dp" />
+          </shape>
+          EOF_FILE
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/btn_amber.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#FFB300" />
+              <corners android:radius="28dp" />
+          </shape>
+          EOF_FILE
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/btn_green.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <gradient android:angle="0" android:startColor="#11998E" android:endColor="#38EF7D" />
+              <corners android:radius="28dp" />
+          </shape>
+          EOF_FILE
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/btn_outline.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#00000000" />
+              <stroke android:width="2dp" android:color="#66FFFFFF" />
+              <corners android:radius="28dp" />
+          </shape>
+          EOF_FILE
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/btn_red.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <gradient android:angle="0" android:startColor="#CB2D3E" android:endColor="#EF473A" />
+              <corners android:radius="28dp" />
+          </shape>
+          EOF_FILE
           mkdir -p app/src/main/res/values
           cat > app/src/main/res/values/strings.xml <<'EOF_FILE'
           <resources>
@@ -102,6 +167,227 @@ jobs:
               android:canRetrieveWindowContent="false"
               android:notificationTimeout="50"
               android:description="@string/service_desc" />
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/guard
+          cat > app/src/main/java/com/example/guard/BlockerService.kt <<'EOF_FILE'
+          package com.example.guard
+
+          import android.accessibilityservice.AccessibilityService
+          import android.graphics.PixelFormat
+          import android.os.Handler
+          import android.os.Looper
+          import android.view.Gravity
+          import android.view.KeyEvent
+          import android.view.View
+          import android.view.WindowManager
+          import android.view.accessibility.AccessibilityEvent
+          import android.widget.LinearLayout
+
+          class BlockerService : AccessibilityService() {
+              private var overlay: View? = null
+              private var locked = false
+              private var inYt = false
+              private val h = Handler(Looper.getMainLooper())
+              private val msgs = listOf(
+                  "أنت أقوى من هذه اللحظة.\nالرغبة موجة وبتعدّي 💪",
+                  "كل مرة بتقاوم فيها بتصير أقوى.\nابتعد عن الجوال وغيّر مكانك.",
+                  "قم، اغسل وجهك، وامشِ شوي.\nبعد دقايق راح تشكر نفسك 🌿",
+                  "قرارك الآن بيحمي احترامك لنفسك.\nاترك الجوال وانشغل بشي ثاني."
+              )
+
+              override fun onAccessibilityEvent(e: AccessibilityEvent?) {
+                  if (e == null || e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || locked) return
+                  val pkg = e.packageName?.toString() ?: return
+                  if (pkg == "com.google.android.youtube") {
+                      if (!Prefs.isActive(this) || overlay != null) { inYt = true; return }
+                      if (!inYt) {
+                          inYt = true
+                          if (Prefs.isBlocked(this)) showMessage() else showQuestion()
+                      }
+                  } else if (pkg != packageName && pkg != "com.android.systemui" && !pkg.contains("inputmethod")) {
+                      inYt = false
+                      hide()
+                  }
+              }
+
+              override fun onInterrupt() {}
+
+              private fun showQuestion() {
+                  val r = page(R.drawable.bg_main)
+                  r.addView(Ui.label(this, "🤔", 72f))
+                  r.addView(Ui.space(this, 12))
+                  r.addView(Ui.label(this, "وقفة قبل ما تكمل", 16f, Ui.GRAY))
+                  r.addView(Ui.space(this, 8))
+                  r.addView(Ui.label(this, "هل أنت في وقت شهوة الآن؟", 30f, bold = true))
+                  r.addView(Ui.space(this, 8))
+                  r.addView(Ui.label(this, "كن صادقًا مع نفسك، القرار لك.", 15f, Ui.GRAY))
+                  r.addView(Ui.space(this, 36))
+                  r.addView(Ui.button(this, "نعم، أنا كذلك", R.drawable.btn_red) { Prefs.block(this); hide(); showMessage() })
+                  r.addView(Ui.button(this, "لا، أنا بخير", R.drawable.btn_green) { Prefs.allow(this); hide() })
+                  show(r)
+              }
+
+              private fun showMessage() {
+                  locked = true
+                  inYt = false
+                  val r = page(R.drawable.bg_calm)
+                  r.addView(Ui.label(this, "🌿", 72f))
+                  r.addView(Ui.space(this, 20))
+                  r.addView(Ui.label(this, msgs.random(), 26f, bold = true))
+                  r.addView(Ui.space(this, 28))
+                  r.addView(Ui.label(this, "جارٍ إرجاعك للشاشة الرئيسية…", 14f, 0xFFB2DFDB.toInt()))
+                  show(r)
+                  performGlobalAction(GLOBAL_ACTION_HOME)
+                  h.postDelayed({ locked = false; hide() }, 5000)
+              }
+
+              private fun page(bg: Int): LinearLayout {
+                  val p = Ui.dp(this, 32)
+                  return LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER
+                      setBackgroundResource(bg)
+                      setPadding(p, p, p, p)
+                      layoutDirection = View.LAYOUT_DIRECTION_RTL
+                      isFocusableInTouchMode = true
+                      setOnKeyListener { _, k, _ -> k == KeyEvent.KEYCODE_BACK }
+                  }
+              }
+
+              private fun show(root: LinearLayout) {
+                  hide()
+                  val lp = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                      PixelFormat.OPAQUE
+                  )
+                  (getSystemService(WINDOW_SERVICE) as WindowManager).addView(root, lp)
+                  overlay = root
+                  root.requestFocus()
+              }
+
+              private fun hide() {
+                  overlay?.let {
+                      try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {}
+                  }
+                  overlay = null
+              }
+          }
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/guard
+          cat > app/src/main/java/com/example/guard/MainActivity.kt <<'EOF_FILE'
+          package com.example.guard
+
+          import android.app.Activity
+          import android.content.Context
+          import android.content.Intent
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.view.View
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+              private lateinit var statusTitle: TextView
+              private lateinit var statusSub: TextView
+              private lateinit var startBtn: TextView
+              private lateinit var stopBtn: TextView
+              private lateinit var warnCard: LinearLayout
+
+              override fun onCreate(b: Bundle?) {
+                  super.onCreate(b)
+                  val c: Context = this
+                  window.statusBarColor = 0xFF0F2027.toInt()
+                  window.navigationBarColor = 0xFF2C5364.toInt()
+
+                  val col = LinearLayout(c).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER_HORIZONTAL
+                      layoutDirection = View.LAYOUT_DIRECTION_RTL
+                      setPadding(Ui.dp(c, 24), Ui.dp(c, 56), Ui.dp(c, 24), Ui.dp(c, 32))
+                  }
+                  col.addView(Ui.label(c, "🛡️", 64f))
+                  col.addView(Ui.label(c, "حارس", 34f, bold = true))
+                  col.addView(Ui.label(c, "درعك في لحظات الضعف", 15f, Ui.GRAY))
+                  col.addView(Ui.space(c, 28))
+
+                  val card = LinearLayout(c).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER
+                      setBackgroundResource(R.drawable.bg_card)
+                      setPadding(Ui.dp(c, 20), Ui.dp(c, 24), Ui.dp(c, 20), Ui.dp(c, 24))
+                  }
+                  statusTitle = Ui.label(c, "", 23f, bold = true)
+                  statusSub = Ui.label(c, "", 14f, Ui.GRAY)
+                  card.addView(statusTitle)
+                  card.addView(Ui.space(c, 6))
+                  card.addView(statusSub)
+                  col.addView(card, LinearLayout.LayoutParams(-1, -2))
+                  col.addView(Ui.space(c, 10))
+
+                  startBtn = Ui.button(c, "ابدأ الحماية", R.drawable.btn_green) { Prefs.start(c); refresh() }
+                  stopBtn = Ui.button(c, "إيقاف الحماية (بعد 10 دقائق)", R.drawable.btn_outline) { Prefs.requestStop(c); refresh() }
+                  col.addView(startBtn)
+                  col.addView(stopBtn)
+
+                  warnCard = LinearLayout(c).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER
+                      setBackgroundResource(R.drawable.bg_warn)
+                      setPadding(Ui.dp(c, 20), Ui.dp(c, 20), Ui.dp(c, 20), Ui.dp(c, 20))
+                  }
+                  warnCard.addView(Ui.label(c, "⚠️ فعّل خدمة إمكانية الوصول", 17f, 0xFFFFD54F.toInt(), true))
+                  warnCard.addView(Ui.space(c, 6))
+                  warnCard.addView(Ui.label(c, "بدونها لا تعمل الحماية. إذا كان الخيار رمادي: معلومات التطبيق ← ⋮ ← السماح بالإعدادات المقيّدة", 13f, Ui.GRAY))
+                  warnCard.addView(Ui.button(c, "فتح الإعدادات", R.drawable.btn_amber, 0xFF1B1B1B.toInt()) {
+                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  })
+                  col.addView(Ui.space(c, 18))
+                  col.addView(warnCard, LinearLayout.LayoutParams(-1, -2))
+
+                  col.addView(Ui.space(c, 32))
+                  col.addView(Ui.label(c, "كل مرة تقاوم فيها، تصير أقوى 💪", 14f, Ui.GRAY))
+
+                  setContentView(ScrollView(c).apply {
+                      setBackgroundResource(R.drawable.bg_main)
+                      isFillViewport = true
+                      addView(col)
+                  })
+              }
+
+              override fun onResume() { super.onResume(); refresh() }
+
+              private fun refresh() {
+                  val on = Prefs.isActive(this)
+                  val st = Prefs.stopAt(this)
+                  val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+                      ?.contains(packageName) == true
+                  when {
+                      !on -> {
+                          statusTitle.text = "الحماية متوقفة"
+                          statusTitle.setTextColor(0xFFB0BEC5.toInt())
+                          statusSub.text = "اضغط ابدأ لتفعيل الدرع"
+                      }
+                      st > 0 -> {
+                          statusTitle.text = "الحماية ستتوقف قريبًا"
+                          statusTitle.setTextColor(0xFFFFD54F.toInt())
+                          statusSub.text = "بعد ${(st - System.currentTimeMillis()) / 60000 + 1} دقيقة"
+                      }
+                      else -> {
+                          statusTitle.text = "الحماية فعّالة ✅"
+                          statusTitle.setTextColor(0xFF69F0AE.toInt())
+                          statusSub.text = "يسبق أي فتح لـ YouTube سؤال صادق"
+                      }
+                  }
+                  val running = on && st == 0L
+                  startBtn.visibility = if (running) View.GONE else View.VISIBLE
+                  stopBtn.visibility = if (running) View.VISIBLE else View.GONE
+                  warnCard.visibility = if (enabled) View.GONE else View.VISIBLE
+              }
+          }
           EOF_FILE
           mkdir -p app/src/main/java/com/example/guard
           cat > app/src/main/java/com/example/guard/Prefs.kt <<'EOF_FILE'
@@ -131,170 +417,41 @@ jobs:
           }
           EOF_FILE
           mkdir -p app/src/main/java/com/example/guard
-          cat > app/src/main/java/com/example/guard/MainActivity.kt <<'EOF_FILE'
+          cat > app/src/main/java/com/example/guard/Ui.kt <<'EOF_FILE'
           package com.example.guard
 
-          import android.app.Activity
-          import android.content.Intent
-          import android.os.Bundle
-          import android.provider.Settings
+          import android.content.Context
+          import android.graphics.Typeface
           import android.view.Gravity
           import android.view.View
-          import android.widget.Button
           import android.widget.LinearLayout
           import android.widget.TextView
 
-          class MainActivity : Activity() {
-              private lateinit var status: TextView
-              private lateinit var warn: TextView
+          object Ui {
+              const val WHITE = 0xFFFFFFFF.toInt()
+              const val GRAY = 0xFF9FB3BF.toInt()
 
-              override fun onCreate(b: Bundle?) {
-                  super.onCreate(b)
-                  val root = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                      gravity = Gravity.CENTER
-                      setPadding(48, 48, 48, 48)
-                      layoutDirection = View.LAYOUT_DIRECTION_RTL
-                  }
-                  status = TextView(this).apply { textSize = 24f; gravity = Gravity.CENTER; setPadding(0, 0, 0, 24) }
-                  warn = TextView(this).apply { textSize = 16f; gravity = Gravity.CENTER; setTextColor(0xFFB00020.toInt()); setPadding(0, 0, 0, 24) }
-                  root.addView(status)
-                  root.addView(warn)
-                  root.addView(button("ابدأ") { Prefs.start(this); refresh() })
-                  root.addView(button("إيقاف (يتم بعد 10 دقائق)") { Prefs.requestStop(this); refresh() })
-                  root.addView(button("تفعيل خدمة إمكانية الوصول") {
-                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                  })
-                  setContentView(root)
-              }
+              fun dp(c: Context, v: Int) = (v * c.resources.displayMetrics.density).toInt()
 
-              private fun button(label: String, f: () -> Unit) = Button(this).apply {
-                  text = label
-                  textSize = 18f
-                  setOnClickListener { f() }
-                  layoutParams = LinearLayout.LayoutParams(-1, 160).apply { topMargin = 24 }
-              }
-
-              override fun onResume() { super.onResume(); refresh() }
-
-              private fun refresh() {
-                  val on = Prefs.isActive(this)
-                  val st = Prefs.stopAt(this)
-                  status.text = when {
-                      !on -> "الحماية متوقفة"
-                      st > 0 -> "الحماية فعّالة، ستتوقف بعد ${(st - System.currentTimeMillis()) / 60000 + 1} دقيقة"
-                      else -> "الحماية فعّالة ✅"
-                  }
-                  val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
-                      ?.contains(packageName) == true
-                  warn.text = if (enabled) "" else "⚠️ فعّل الخدمة من زر إمكانية الوصول بالأسفل (إذا كانت معطلة: معلومات التطبيق ← ⋮ ← السماح بالإعدادات المقيّدة)"
-              }
-          }
-          EOF_FILE
-          mkdir -p app/src/main/java/com/example/guard
-          cat > app/src/main/java/com/example/guard/BlockerService.kt <<'EOF_FILE'
-          package com.example.guard
-
-          import android.accessibilityservice.AccessibilityService
-          import android.graphics.PixelFormat
-          import android.os.Handler
-          import android.os.Looper
-          import android.view.Gravity
-          import android.view.KeyEvent
-          import android.view.View
-          import android.view.WindowManager
-          import android.view.accessibility.AccessibilityEvent
-          import android.widget.Button
-          import android.widget.LinearLayout
-          import android.widget.TextView
-
-          class BlockerService : AccessibilityService() {
-              private var overlay: View? = null
-              private var locked = false
-              private val h = Handler(Looper.getMainLooper())
-              private val msgs = listOf(
-                  "أنت أقوى من هذه اللحظة. الرغبة موجة وبتعدّي. 💪",
-                  "كل مرة بتقاوم فيها بتصير أقوى. ابتعد عن الجوال وغيّر مكانك.",
-                  "قم، اغسل وجهك، وامشِ شوي. بعد دقايق راح تشكر نفسك. 🌿",
-                  "قرارك الآن بيحمي احترامك لنفسك. اترك الجوال وانشغل بشي ثاني."
-              )
-
-              override fun onAccessibilityEvent(e: AccessibilityEvent?) {
-                  if (e == null || e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || locked) return
-                  val pkg = e.packageName?.toString() ?: return
-                  if (pkg == "com.google.android.youtube") {
-                      if (!Prefs.isActive(this) || overlay != null) return
-                      if (Prefs.isBlocked(this)) showMessage() else if (!Prefs.isAllowed(this)) showQuestion()
-                  } else if (pkg != packageName && pkg != "com.android.systemui" && !pkg.contains("inputmethod")) {
-                      hide()
-                  }
-              }
-
-              override fun onInterrupt() {}
-
-              private fun showQuestion() {
-                  val r = base()
-                  r.addView(label("هل أنت في وقت شهوة الآن؟", 28f))
-                  r.addView(btn("نعم", 0xFFC62828.toInt()) { Prefs.block(this); hide(); showMessage() })
-                  r.addView(btn("لا", 0xFF2E7D32.toInt()) { Prefs.allow(this); hide() })
-                  show(r)
-              }
-
-              private fun showMessage() {
-                  locked = true
-                  val r = base()
-                  r.addView(label(msgs.random(), 26f))
-                  show(r)
-                  performGlobalAction(GLOBAL_ACTION_HOME)
-                  h.postDelayed({ locked = false; hide() }, 5000)
-              }
-
-              private fun base() = LinearLayout(this).apply {
-                  orientation = LinearLayout.VERTICAL
-                  gravity = Gravity.CENTER
-                  setBackgroundColor(0xFF101820.toInt())
-                  setPadding(64, 64, 64, 64)
-                  layoutDirection = View.LAYOUT_DIRECTION_RTL
-                  isFocusableInTouchMode = true
-                  setOnKeyListener { _, k, _ -> k == KeyEvent.KEYCODE_BACK }
-              }
-
-              private fun label(s: String, size: Float) = TextView(this).apply {
+              fun label(c: Context, s: String, sp: Float, color: Int = WHITE, bold: Boolean = false) = TextView(c).apply {
                   text = s
-                  textSize = size
-                  setTextColor(0xFFFFFFFF.toInt())
+                  textSize = sp
+                  setTextColor(color)
                   gravity = Gravity.CENTER
-                  setPadding(0, 24, 0, 48)
+                  if (bold) setTypeface(typeface, Typeface.BOLD)
+                  setLineSpacing(0f, 1.25f)
               }
 
-              private fun btn(s: String, color: Int, f: () -> Unit) = Button(this).apply {
-                  text = s
-                  textSize = 22f
-                  setTextColor(0xFFFFFFFF.toInt())
-                  setBackgroundColor(color)
-                  setOnClickListener { f() }
-                  layoutParams = LinearLayout.LayoutParams(-1, 170).apply { topMargin = 32 }
-              }
-
-              private fun show(root: LinearLayout) {
-                  hide()
-                  val lp = WindowManager.LayoutParams(
-                      WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
-                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                      PixelFormat.OPAQUE
-                  )
-                  (getSystemService(WINDOW_SERVICE) as WindowManager).addView(root, lp)
-                  overlay = root
-                  root.requestFocus()
-              }
-
-              private fun hide() {
-                  overlay?.let {
-                      try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {}
+              fun button(c: Context, s: String, bg: Int, color: Int = WHITE, f: () -> Unit) =
+                  label(c, s, 19f, color, true).apply {
+                      setBackgroundResource(bg)
+                      setPadding(dp(c, 16), dp(c, 18), dp(c, 16), dp(c, 18))
+                      isClickable = true
+                      setOnClickListener { f() }
+                      layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(c, 14) }
                   }
-                  overlay = null
-              }
+
+              fun space(c: Context, h: Int) = View(c).apply { layoutParams = LinearLayout.LayoutParams(-1, dp(c, h)) }
           }
           EOF_FILE
           gradle assembleDebug --no-daemon
