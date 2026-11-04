@@ -173,6 +173,7 @@ jobs:
           package com.example.guard
 
           import android.accessibilityservice.AccessibilityService
+          import android.content.Intent
           import android.graphics.PixelFormat
           import android.os.Handler
           import android.os.Looper
@@ -187,6 +188,10 @@ jobs:
               private var overlay: View? = null
               private var locked = false
               private var inYt = false
+              private var lastOv = 0L
+              private var lastYt = 0L
+
+              companion object { var instance: BlockerService? = null }
               private val h = Handler(Looper.getMainLooper())
               private val msgs = listOf(
                   "أنت أقوى من هذه اللحظة.\nالرغبة موجة وبتعدّي 💪",
@@ -199,18 +204,36 @@ jobs:
                   if (e == null || e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || locked) return
                   val pkg = e.packageName?.toString() ?: return
                   if (pkg == "com.google.android.youtube") {
-                      if (!Prefs.isActive(this) || overlay != null) { inYt = true; return }
+                      val now = System.currentTimeMillis()
+                      if (!Prefs.isActive(this) || overlay != null) { inYt = true; lastYt = now; return }
+                      if (now - lastYt > 90_000) inYt = false
+                      lastYt = now
                       if (!inYt) {
                           inYt = true
                           if (Prefs.isBlocked(this)) showMessage() else showQuestion()
                       }
-                  } else if (pkg != packageName && pkg != "com.android.systemui" && !pkg.contains("inputmethod")) {
+                  } else if (pkg == packageName) {
+                      if (overlay != null || System.currentTimeMillis() - lastOv < 1500) return
+                      inYt = false
+                  } else if (pkg != "com.android.systemui" && !pkg.contains("inputmethod")) {
                       inYt = false
                       hide()
                   }
               }
 
               override fun onInterrupt() {}
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  instance = this
+              }
+
+              override fun onUnbind(intent: Intent?): Boolean {
+                  instance = null
+                  return super.onUnbind(intent)
+              }
+
+              fun testQuestion() { if (overlay == null) showQuestion() }
 
               private fun showQuestion() {
                   val r = page(R.drawable.bg_main)
@@ -264,11 +287,13 @@ jobs:
                   )
                   (getSystemService(WINDOW_SERVICE) as WindowManager).addView(root, lp)
                   overlay = root
+                  lastOv = System.currentTimeMillis()
                   root.requestFocus()
               }
 
               private fun hide() {
                   overlay?.let {
+                      lastOv = System.currentTimeMillis()
                       try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {}
                   }
                   overlay = null
@@ -332,6 +357,7 @@ jobs:
                   stopBtn = Ui.button(c, "إيقاف الحماية (بعد 10 دقائق)", R.drawable.btn_outline) { Prefs.requestStop(c); refresh() }
                   col.addView(startBtn)
                   col.addView(stopBtn)
+                  col.addView(Ui.button(c, "اختبار شاشة السؤال", R.drawable.btn_outline) { BlockerService.instance?.testQuestion() })
 
                   warnCard = LinearLayout(c).apply {
                       orientation = LinearLayout.VERTICAL
@@ -379,7 +405,8 @@ jobs:
                       else -> {
                           statusTitle.text = "الحماية فعّالة ✅"
                           statusTitle.setTextColor(0xFF69F0AE.toInt())
-                          statusSub.text = "يسبق أي فتح لـ YouTube سؤال صادق"
+                          statusSub.text = if (BlockerService.instance != null) "الخدمة متصلة ✓ يسبق أي فتح لـ YouTube سؤال"
+                              else "⚠️ الخدمة غير متصلة، أطفئها وشغّلها من إمكانية الوصول"
                       }
                   }
                   val running = on && st == 0L
