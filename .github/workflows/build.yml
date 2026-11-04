@@ -1,0 +1,304 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Create project and build
+        run: |
+          set -e
+          mkdir -p .
+          cat > settings.gradle.kts <<'EOF_FILE'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "Guard"
+          include(":app")
+          EOF_FILE
+          mkdir -p .
+          cat > build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF_FILE
+          mkdir -p .
+          cat > gradle.properties <<'EOF_FILE'
+          org.gradle.jvmargs=-Xmx2g
+          android.nonTransitiveRClass=true
+          EOF_FILE
+          mkdir -p app
+          cat > app/build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.example.guard"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.example.guard"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          EOF_FILE
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:label="@string/app_name"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".BlockerService"
+                      android:exported="true"
+                      android:label="@string/app_name"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config" />
+                  </service>
+              </application>
+          </manifest>
+          EOF_FILE
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/strings.xml <<'EOF_FILE'
+          <resources>
+              <string name="app_name">حارس</string>
+              <string name="service_desc">يراقب فتح يوتيوب ويعرض سؤال التأكيد قبل الدخول.</string>
+          </resources>
+          EOF_FILE
+          mkdir -p app/src/main/res/xml
+          cat > app/src/main/res/xml/accessibility_config.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canRetrieveWindowContent="false"
+              android:notificationTimeout="50"
+              android:description="@string/service_desc" />
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/guard
+          cat > app/src/main/java/com/example/guard/Prefs.kt <<'EOF_FILE'
+          package com.example.guard
+
+          import android.content.Context
+
+          object Prefs {
+              private fun p(c: Context) = c.getSharedPreferences("guard", Context.MODE_PRIVATE)
+              private fun now() = System.currentTimeMillis()
+
+              fun start(c: Context) = p(c).edit().putBoolean("on", true).putLong("stopAt", 0).apply()
+              fun requestStop(c: Context) = p(c).edit().putLong("stopAt", now() + 10 * 60_000).apply()
+              fun stopAt(c: Context) = p(c).getLong("stopAt", 0)
+
+              fun isActive(c: Context): Boolean {
+                  val s = p(c)
+                  if (!s.getBoolean("on", false)) return false
+                  val st = s.getLong("stopAt", 0)
+                  return st == 0L || now() < st
+              }
+
+              fun isAllowed(c: Context) = now() < p(c).getLong("allowUntil", 0)
+              fun isBlocked(c: Context) = now() < p(c).getLong("blockUntil", 0)
+              fun allow(c: Context) = p(c).edit().putLong("allowUntil", now() + 20 * 60_000).putLong("blockUntil", 0).apply()
+              fun block(c: Context) = p(c).edit().putLong("blockUntil", now() + 30 * 60_000).putLong("allowUntil", 0).apply()
+          }
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/guard
+          cat > app/src/main/java/com/example/guard/MainActivity.kt <<'EOF_FILE'
+          package com.example.guard
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.view.View
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+              private lateinit var status: TextView
+              private lateinit var warn: TextView
+
+              override fun onCreate(b: Bundle?) {
+                  super.onCreate(b)
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER
+                      setPadding(48, 48, 48, 48)
+                      layoutDirection = View.LAYOUT_DIRECTION_RTL
+                  }
+                  status = TextView(this).apply { textSize = 24f; gravity = Gravity.CENTER; setPadding(0, 0, 0, 24) }
+                  warn = TextView(this).apply { textSize = 16f; gravity = Gravity.CENTER; setTextColor(0xFFB00020.toInt()); setPadding(0, 0, 0, 24) }
+                  root.addView(status)
+                  root.addView(warn)
+                  root.addView(button("ابدأ") { Prefs.start(this); refresh() })
+                  root.addView(button("إيقاف (يتم بعد 10 دقائق)") { Prefs.requestStop(this); refresh() })
+                  root.addView(button("تفعيل خدمة إمكانية الوصول") {
+                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  })
+                  setContentView(root)
+              }
+
+              private fun button(label: String, f: () -> Unit) = Button(this).apply {
+                  text = label
+                  textSize = 18f
+                  setOnClickListener { f() }
+                  layoutParams = LinearLayout.LayoutParams(-1, 160).apply { topMargin = 24 }
+              }
+
+              override fun onResume() { super.onResume(); refresh() }
+
+              private fun refresh() {
+                  val on = Prefs.isActive(this)
+                  val st = Prefs.stopAt(this)
+                  status.text = when {
+                      !on -> "الحماية متوقفة"
+                      st > 0 -> "الحماية فعّالة، ستتوقف بعد ${(st - System.currentTimeMillis()) / 60000 + 1} دقيقة"
+                      else -> "الحماية فعّالة ✅"
+                  }
+                  val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+                      ?.contains(packageName) == true
+                  warn.text = if (enabled) "" else "⚠️ فعّل الخدمة من زر إمكانية الوصول بالأسفل (إذا كانت معطلة: معلومات التطبيق ← ⋮ ← السماح بالإعدادات المقيّدة)"
+              }
+          }
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/guard
+          cat > app/src/main/java/com/example/guard/BlockerService.kt <<'EOF_FILE'
+          package com.example.guard
+
+          import android.accessibilityservice.AccessibilityService
+          import android.graphics.PixelFormat
+          import android.os.Handler
+          import android.os.Looper
+          import android.view.Gravity
+          import android.view.KeyEvent
+          import android.view.View
+          import android.view.WindowManager
+          import android.view.accessibility.AccessibilityEvent
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+
+          class BlockerService : AccessibilityService() {
+              private var overlay: View? = null
+              private var locked = false
+              private val h = Handler(Looper.getMainLooper())
+              private val msgs = listOf(
+                  "أنت أقوى من هذه اللحظة. الرغبة موجة وبتعدّي. 💪",
+                  "كل مرة بتقاوم فيها بتصير أقوى. ابتعد عن الجوال وغيّر مكانك.",
+                  "قم، اغسل وجهك، وامشِ شوي. بعد دقايق راح تشكر نفسك. 🌿",
+                  "قرارك الآن بيحمي احترامك لنفسك. اترك الجوال وانشغل بشي ثاني."
+              )
+
+              override fun onAccessibilityEvent(e: AccessibilityEvent?) {
+                  if (e == null || e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || locked) return
+                  val pkg = e.packageName?.toString() ?: return
+                  if (pkg == "com.google.android.youtube") {
+                      if (!Prefs.isActive(this) || overlay != null) return
+                      if (Prefs.isBlocked(this)) showMessage() else if (!Prefs.isAllowed(this)) showQuestion()
+                  } else if (pkg != packageName && pkg != "com.android.systemui" && !pkg.contains("inputmethod")) {
+                      hide()
+                  }
+              }
+
+              override fun onInterrupt() {}
+
+              private fun showQuestion() {
+                  val r = base()
+                  r.addView(label("هل أنت في وقت شهوة الآن؟", 28f))
+                  r.addView(btn("نعم", 0xFFC62828.toInt()) { Prefs.block(this); hide(); showMessage() })
+                  r.addView(btn("لا", 0xFF2E7D32.toInt()) { Prefs.allow(this); hide() })
+                  show(r)
+              }
+
+              private fun showMessage() {
+                  locked = true
+                  val r = base()
+                  r.addView(label(msgs.random(), 26f))
+                  show(r)
+                  performGlobalAction(GLOBAL_ACTION_HOME)
+                  h.postDelayed({ locked = false; hide() }, 5000)
+              }
+
+              private fun base() = LinearLayout(this).apply {
+                  orientation = LinearLayout.VERTICAL
+                  gravity = Gravity.CENTER
+                  setBackgroundColor(0xFF101820.toInt())
+                  setPadding(64, 64, 64, 64)
+                  layoutDirection = View.LAYOUT_DIRECTION_RTL
+                  isFocusableInTouchMode = true
+                  setOnKeyListener { _, k, _ -> k == KeyEvent.KEYCODE_BACK }
+              }
+
+              private fun label(s: String, size: Float) = TextView(this).apply {
+                  text = s
+                  textSize = size
+                  setTextColor(0xFFFFFFFF.toInt())
+                  gravity = Gravity.CENTER
+                  setPadding(0, 24, 0, 48)
+              }
+
+              private fun btn(s: String, color: Int, f: () -> Unit) = Button(this).apply {
+                  text = s
+                  textSize = 22f
+                  setTextColor(0xFFFFFFFF.toInt())
+                  setBackgroundColor(color)
+                  setOnClickListener { f() }
+                  layoutParams = LinearLayout.LayoutParams(-1, 170).apply { topMargin = 32 }
+              }
+
+              private fun show(root: LinearLayout) {
+                  hide()
+                  val lp = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                      PixelFormat.OPAQUE
+                  )
+                  (getSystemService(WINDOW_SERVICE) as WindowManager).addView(root, lp)
+                  overlay = root
+                  root.requestFocus()
+              }
+
+              private fun hide() {
+                  overlay?.let {
+                      try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {}
+                  }
+                  overlay = null
+              }
+          }
+          EOF_FILE
+          gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Guard-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
