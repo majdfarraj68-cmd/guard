@@ -164,7 +164,7 @@ jobs:
           <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
               android:accessibilityEventTypes="typeWindowStateChanged"
               android:accessibilityFeedbackType="feedbackGeneric"
-              android:canRetrieveWindowContent="false"
+              android:canRetrieveWindowContent="true"
               android:notificationTimeout="50"
               android:description="@string/service_desc" />
           EOF_FILE
@@ -190,9 +190,10 @@ jobs:
               private var inYt = false
               private var lastOv = 0L
               private var lastYt = 0L
+              private val h = Handler(Looper.getMainLooper())
 
               companion object { var instance: BlockerService? = null }
-              private val h = Handler(Looper.getMainLooper())
+
               private val msgs = listOf(
                   "أنت أقوى من هذه اللحظة.\nالرغبة موجة وبتعدّي 💪",
                   "كل مرة بتقاوم فيها بتصير أقوى.\nابتعد عن الجوال وغيّر مكانك.",
@@ -200,9 +201,40 @@ jobs:
                   "قرارك الآن بيحمي احترامك لنفسك.\nاترك الجوال وانشغل بشي ثاني."
               )
 
+              private val poll = object : Runnable {
+                  override fun run() {
+                      try {
+                          val n = rootInActiveWindow
+                          val p = n?.packageName?.toString()
+                          n?.recycle()
+                          if (p != null) handle(p)
+                      } catch (_: Exception) {}
+                      h.postDelayed(this, 400)
+                  }
+              }
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  instance = this
+                  h.removeCallbacks(poll)
+                  h.post(poll)
+              }
+
+              override fun onUnbind(intent: Intent?): Boolean {
+                  instance = null
+                  h.removeCallbacks(poll)
+                  return super.onUnbind(intent)
+              }
+
               override fun onAccessibilityEvent(e: AccessibilityEvent?) {
-                  if (e == null || e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || locked) return
-                  val pkg = e.packageName?.toString() ?: return
+                  if (e == null || e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+                  e.packageName?.toString()?.let { handle(it) }
+              }
+
+              override fun onInterrupt() {}
+
+              private fun handle(pkg: String) {
+                  if (locked) return
                   if (pkg == "com.google.android.youtube") {
                       val now = System.currentTimeMillis()
                       if (!Prefs.isActive(this) || overlay != null) { inYt = true; lastYt = now; return }
@@ -219,18 +251,6 @@ jobs:
                       inYt = false
                       hide()
                   }
-              }
-
-              override fun onInterrupt() {}
-
-              override fun onServiceConnected() {
-                  super.onServiceConnected()
-                  instance = this
-              }
-
-              override fun onUnbind(intent: Intent?): Boolean {
-                  instance = null
-                  return super.onUnbind(intent)
               }
 
               fun testQuestion() { if (overlay == null) showQuestion() }
@@ -308,6 +328,8 @@ jobs:
           import android.content.Context
           import android.content.Intent
           import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
           import android.provider.Settings
           import android.view.Gravity
           import android.view.View
@@ -321,6 +343,8 @@ jobs:
               private lateinit var startBtn: TextView
               private lateinit var stopBtn: TextView
               private lateinit var warnCard: LinearLayout
+              private val h = Handler(Looper.getMainLooper())
+              private val tick = object : Runnable { override fun run() { refresh(); h.postDelayed(this, 2000) } }
 
               override fun onCreate(b: Bundle?) {
                   super.onCreate(b)
@@ -365,9 +389,9 @@ jobs:
                       setBackgroundResource(R.drawable.bg_warn)
                       setPadding(Ui.dp(c, 20), Ui.dp(c, 20), Ui.dp(c, 20), Ui.dp(c, 20))
                   }
-                  warnCard.addView(Ui.label(c, "⚠️ فعّل خدمة إمكانية الوصول", 17f, 0xFFFFD54F.toInt(), true))
+                  warnCard.addView(Ui.label(c, "⚠️ خدمة الحماية غير متصلة", 17f, 0xFFFFD54F.toInt(), true))
                   warnCard.addView(Ui.space(c, 6))
-                  warnCard.addView(Ui.label(c, "بدونها لا تعمل الحماية. إذا كان الخيار رمادي: معلومات التطبيق ← ⋮ ← السماح بالإعدادات المقيّدة", 13f, Ui.GRAY))
+                  warnCard.addView(Ui.label(c, "افتح الإعدادات ← حارس، أطفئ الخدمة ثم شغّلها من جديد. إذا كان الخيار رمادي: معلومات التطبيق ← ⋮ ← السماح بالإعدادات المقيّدة", 13f, Ui.GRAY))
                   warnCard.addView(Ui.button(c, "فتح الإعدادات", R.drawable.btn_amber, 0xFF1B1B1B.toInt()) {
                       startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                   })
@@ -384,7 +408,9 @@ jobs:
                   })
               }
 
-              override fun onResume() { super.onResume(); refresh() }
+              override fun onResume() { super.onResume(); h.post(tick) }
+
+              override fun onPause() { super.onPause(); h.removeCallbacks(tick) }
 
               private fun refresh() {
                   val on = Prefs.isActive(this)
@@ -412,7 +438,7 @@ jobs:
                   val running = on && st == 0L
                   startBtn.visibility = if (running) View.GONE else View.VISIBLE
                   stopBtn.visibility = if (running) View.VISIBLE else View.GONE
-                  warnCard.visibility = if (enabled) View.GONE else View.VISIBLE
+                  warnCard.visibility = if (BlockerService.instance != null) View.GONE else View.VISIBLE
               }
           }
           EOF_FILE
