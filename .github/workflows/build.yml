@@ -48,14 +48,25 @@ jobs:
                   applicationId = "com.example.guard"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
+                  versionCode = 7
+                  versionName = "7"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
                   targetCompatibility = JavaVersion.VERSION_17
               }
               kotlinOptions { jvmTarget = "17" }
+              signingConfigs {
+                  create("fixed") {
+                      storeFile = file("fixed.keystore")
+                      storePassword = "android"
+                      keyAlias = "androiddebugkey"
+                      keyPassword = "android"
+                  }
+              }
+              buildTypes {
+                  getByName("debug") { signingConfig = signingConfigs.getByName("fixed") }
+              }
           }
           EOF_FILE
           mkdir -p app/src/main
@@ -182,7 +193,9 @@ jobs:
           import android.view.View
           import android.view.WindowManager
           import android.view.accessibility.AccessibilityEvent
+          import android.widget.Button
           import android.widget.LinearLayout
+          import android.widget.TextView
 
           class BlockerService : AccessibilityService() {
               private var overlay: View? = null
@@ -190,6 +203,7 @@ jobs:
               private var inYt = false
               private var lastOv = 0L
               private var lastYt = 0L
+              private var lastSeen = ""
               private val h = Handler(Looper.getMainLooper())
 
               companion object { var instance: BlockerService? = null }
@@ -234,6 +248,10 @@ jobs:
               override fun onInterrupt() {}
 
               private fun handle(pkg: String) {
+                  if (pkg != lastSeen) {
+                      lastSeen = pkg
+                      Prefs.setDbg(this, "pkg", pkg + "  " + java.text.SimpleDateFormat("HH:mm:ss").format(java.util.Date()))
+                  }
                   if (locked) return
                   if (pkg == "com.google.android.youtube") {
                       val now = System.currentTimeMillis()
@@ -242,7 +260,12 @@ jobs:
                       lastYt = now
                       if (!inYt) {
                           inYt = true
-                          if (Prefs.isBlocked(this)) showMessage() else showQuestion()
+                          try {
+                              if (Prefs.isBlocked(this)) showMessage() else showQuestion()
+                          } catch (t: Throwable) {
+                              Prefs.setDbg(this, "err", t.toString())
+                              try { fallbackQuestion() } catch (_: Throwable) {}
+                          }
                       }
                   } else if (pkg == packageName) {
                       if (overlay != null || System.currentTimeMillis() - lastOv < 1500) return
@@ -253,7 +276,34 @@ jobs:
                   }
               }
 
-              fun testQuestion() { if (overlay == null) showQuestion() }
+              fun testQuestion() {
+                  if (overlay != null) return
+                  try { showQuestion() } catch (t: Throwable) {
+                      Prefs.setDbg(this, "err", t.toString())
+                      try { fallbackQuestion() } catch (_: Throwable) {}
+                  }
+              }
+
+              private fun fallbackQuestion() {
+                  val r = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER
+                      setBackgroundColor(0xFF101820.toInt())
+                      setPadding(64, 64, 64, 64)
+                      isFocusableInTouchMode = true
+                      setOnKeyListener { _, k, _ -> k == KeyEvent.KEYCODE_BACK }
+                  }
+                  r.addView(TextView(this).apply { text = "هل أنت في وقت شهوة الآن؟"; textSize = 26f; setTextColor(-1); gravity = Gravity.CENTER })
+                  r.addView(Button(this).apply {
+                      text = "نعم"
+                      setOnClickListener { Prefs.block(this@BlockerService); hide(); performGlobalAction(GLOBAL_ACTION_HOME) }
+                  })
+                  r.addView(Button(this).apply {
+                      text = "لا"
+                      setOnClickListener { hide() }
+                  })
+                  show(r)
+              }
 
               private fun showQuestion() {
                   val r = page(R.drawable.bg_main)
@@ -343,6 +393,7 @@ jobs:
               private lateinit var startBtn: TextView
               private lateinit var stopBtn: TextView
               private lateinit var warnCard: LinearLayout
+              private lateinit var diag: TextView
               private val h = Handler(Looper.getMainLooper())
               private val tick = object : Runnable { override fun run() { refresh(); h.postDelayed(this, 2000) } }
 
@@ -400,6 +451,9 @@ jobs:
 
                   col.addView(Ui.space(c, 32))
                   col.addView(Ui.label(c, "كل مرة تقاوم فيها، تصير أقوى 💪", 14f, Ui.GRAY))
+                  col.addView(Ui.space(c, 24))
+                  diag = Ui.label(c, "", 11f, 0xFF7C93A0.toInt())
+                  col.addView(diag)
 
                   setContentView(ScrollView(c).apply {
                       setBackgroundResource(R.drawable.bg_main)
@@ -439,6 +493,9 @@ jobs:
                   startBtn.visibility = if (running) View.GONE else View.VISIBLE
                   stopBtn.visibility = if (running) View.VISIBLE else View.GONE
                   warnCard.visibility = if (BlockerService.instance != null) View.GONE else View.VISIBLE
+                  val pk = Prefs.dbg(this, "pkg").ifEmpty { "لا شيء" }
+                  val er = Prefs.dbg(this, "err")
+                  diag.text = "الإصدار 7\nآخر تطبيق رصدته الخدمة: $pk" + (if (er.isEmpty()) "" else "\nخطأ: $er")
               }
           }
           EOF_FILE
@@ -462,6 +519,9 @@ jobs:
                   val st = s.getLong("stopAt", 0)
                   return st == 0L || now() < st
               }
+
+              fun setDbg(c: Context, k: String, v: String) = p(c).edit().putString("dbg_" + k, v).apply()
+              fun dbg(c: Context, k: String): String = p(c).getString("dbg_" + k, "") ?: ""
 
               fun isAllowed(c: Context) = now() < p(c).getLong("allowUntil", 0)
               fun isBlocked(c: Context) = now() < p(c).getLong("blockUntil", 0)
@@ -507,6 +567,55 @@ jobs:
               fun space(c: Context, h: Int) = View(c).apply { layoutParams = LinearLayout.LayoutParams(-1, dp(c, h)) }
           }
           EOF_FILE
+          base64 -d > app/fixed.keystore <<'EOF_KS'
+          MIIKVgIBAzCCCgAGCSqGSIb3DQEHAaCCCfEEggntMIIJ6TCCBcAGCSqGSIb3DQEHAaCCBbEEggWt
+          MIIFqTCCBaUGCyqGSIb3DQEMCgECoIIFQDCCBTwwZgYJKoZIhvcNAQUNMFkwOAYJKoZIhvcNAQUM
+          MCsEFJWXXDIFFL7fJHIofAspGKSyAr1OAgInEAIBIDAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQB
+          KgQQNagu1TEI0eFB3dwjkK6wXASCBNB8QgcWcoC130WlmlOIczY8FmHRBB51xZ78dZ1C9gz5XT5C
+          3Fj+0pxkvRrNFp3+V1DAMtMhDG6pIbRe6AJCjD59nEv/XcLtyu2GGq+Q1bLZ8QebL7spkyrx/Yk8
+          ndLlzdBjVlQQabxo/UB3bJLNue7dBOYid0GRM2BKOcILofBH31EZ93H1n+88kzcF91n8Skznb+Bw
+          7dMq4v2Ba2nzztdOVwHxAPh68ZrOvpyArkX6iWBbkhOGI9l7iyPOeGRX5+Ljzh9y17KAow5xX6zs
+          Mm5Btzw0v/cinK0iEZMEZ8P4kis/zQaFZlXZsyzez4UMwgXREPAYSjm0MGEbDwCfiuyB9FzZ2DOx
+          kdvwpHm9gdsFV1FBxmW//NvJIdUD/LRCZM/IIjWpbD8zgk2Vik/8jXyKCW9dPiW8me5X0mAv3PLw
+          kDLHduSEyGH0jDtHaJGXdMLucwoCNmpnGTia7lJiqbVl/XxYVRtjXo0VU/skggxNnLAyO/tAVhL/
+          YbRf5U7IwyyVIwyc7LbDyO1nn1/LfVprM9sfw/l3vrWVroQFOGLTM4oa4NPivCGUkmXnjKNG34oE
+          2UBoxEtnmxnFm7KCGLCarRTXgOYw1R1VGyD/wYJW5pI3bV/8+y096sq4txIwbdaTp7qKgx9cjjff
+          7cZU+GLEWoYG0pmwkArK/QQA4b11X6iUWlat4UwMyb9RqWlMiiNrNyvyqSF1cpvtTVWI6PJCNAC0
+          Mygp8TU1LkKT0K4X2ZUJ+smzuDfYzAmD46lBfnyHtdNCxJhR2suOJ3Ls+pne/HHCzR8hoEG+Ly8p
+          SHyj8GqffHjm539sZetUjPf5fnk2HoPHeY3OzaL3L8eXK5QtfhUCrxmn+58Xum0AeOO6LytKffg1
+          p+kKl/53GPQ8JXpJGsLePqqFAUFA097zCVnFjFlZADyeD/aUPilXfslCZEg6T0kPv22ot/Tt9soK
+          iFLvC1YO1EKP9kPU2i4PAKGBzZTm3Bs9BU53OFl9xkuCKsQvA3Ey4TNIwDTzCWKDd86u3q5U/iry
+          08s7KzqEA7fJFksAff2zPXSm6JqTCR2i5Z36LMbeaoaXL29m/ClYRAsjYzf/5bQas39QLfkz0LFl
+          CRtPNvnRPrb7u/oSDtC49ZtmpTKbbREVaaZ6vWySqNqvFXBnPZZaXQ1A1CC+mBi52/RVGcWqYN7s
+          Hc6uTRE5djGTlGvdy/fz/PXZuXEWAm//cbF1yHVsTz2mbOCDvrK4fP+QeoiWzjap8HHZLLll/t4f
+          7dSkA2DsEj3UlLHtQCdDUh7XAdtQt6QncOHI+6/p3dD7owx6TgI07QjOHOaNXVs5oXLGseG20IF8
+          Gvw8LEtDysAW7Y7tiSr+txksFuKlNOY//Tj3WQZ1W6eBmQDu+a8K6FQuC+nYfAYt/VWF5LmRJH2S
+          8+VdaoBhTYmg2QxKjlWPq8IBJ2HwaAb/n0BdW59IsyOEmUrjnzfk5sud9FMLDMX93EpDbWpadLqG
+          PXpIcp0iV2/LNRw8pI25R4KfKDmYpJonZEkPIobFcSdfVHD1yYsjUsN4R3iUhG+pH9qWJK9wsZoC
+          Q6QetDdS+Eomm89P42MGZ+0TgyIrmf5FsYMpXwIu/D27CqEgXbq6b1vwn/oxE1i5Ggex+PjhExQT
+          5zFSMC0GCSqGSIb3DQEJFDEgHh4AYQBuAGQAcgBvAGkAZABkAGUAYgB1AGcAawBlAHkwIQYJKoZI
+          hvcNAQkVMRQEElRpbWUgMTc5Mzg3OTcwMzYzMjCCBCEGCSqGSIb3DQEHBqCCBBIwggQOAgEAMIIE
+          BwYJKoZIhvcNAQcBMGYGCSqGSIb3DQEFDTBZMDgGCSqGSIb3DQEFDDArBBT6r4EggFUGb05we77p
+          0EvKws9ubwICJxACASAwDAYIKoZIhvcNAgkFADAdBglghkgBZQMEASoEEKpWlgZJtaA3pAORLyWo
+          DmKAggOQ3myiN6LyyJxobw0z6DcgBAlg/M0C+LZEE0DxCQB5rS1dgfVv/a/dEO3WPo+TxmAsN3In
+          QOBgqYtliaT2RDcArx+8zjUnqLGazsZx8asMjRPWSvtnu2hJx2XA5lNaZdakIN35j3jn2KbogtSi
+          oOfKxmk5afbIqZx/XhPaJbQFkZy1HOrtTF+QRTFpF4mycKqLbptgrB5Q4VZNAvcrW00BKFsRBhqp
+          PN52kfY6ry75hXMsSYLIM2N/V5OwR3kSIdo/tGbSd20LlAVmBpuSYsY8kUUJ3VTdSkNisLinRqgh
+          rofaI0sZzPNjBZPN13jSHnug5DvhqgCp5AGwmw1esqp2t77obc3nUy7V13n74j4c4lZVeSqgSBCR
+          HRa/l39b8k65GiR0/HNpVc2w5PLIy2iq1tXVBjJuQF5iNKQdMXjSOHL+w92+EoGNbKJxWcFh6anB
+          PYUmc0DH5UoqPRq7d9xfxwZ3ZvUaSH6CZR7GXiz3czWTNNkzW6VQ/kP8R9vgTfTXNvdEXoZitcfr
+          rUxKsi9yTFQ/hiYNnYjRl0ieqhBkDrAuACcJ/CK65FmA28GTHB/HW+wsZrvi8WeP8xWMmMf7boiS
+          b6Asmik1Sh1CwzT5Y/2pS5pRsEgDIr85kJVdHetbgwqYcOHNlZnS4JrIpYbhRX+Yxa3zq+BsBkRS
+          9fNYaGlUl1Wme54uxXNwY3Hej4eqRWaHcYmmXkD7T9h/vxKG8Pipb/5lYBG3oLZSqhnJHdraag3O
+          DQwS+4hZmfQcqxs9qxa6VEjs/Q/jZ9Zv1CsJ3SBZE5RyXDS1PlibWdh3WM2XGwVkv+ggReYPoi5D
+          uB4dfVFGv213vlP3bCiJMN7HxC4haG/s678RmZEFIT5sEq/ZW7439Dwd1HCu5IS3U0tGNRZi/NhN
+          gYZ547ICPaH2GbRBQxzF4pXLk88XWGIKritp4N8JrU60vTDjNaH0JOTN8GLACRaWiNTa7fgKddBn
+          Q7K6ZgVkS3W646J1MB7Wvu8q76d4lti1MWW7LIWbb+L3FS4Ekgazz4EZrCQ+lW3TMaWZ2oukU67f
+          xHUH4slYbwuZavbnx4e9X0bd2k2iXUqEgKoh9QufX2slXvEOonSAwryodvxUeMW3U6Tk+1Edz06s
+          issVWitDlmTFCV5X5lCjU6LEYBoTo5tlvLPOQTx8NmgeiXUhpqK8dZ3R2KfB2vtNJnummWn2H62l
+          14LHtsJSME0wMTANBglghkgBZQMEAgEFAAQgesGRBnwsNCQ3YrDtA1NTFLc0B2LGBzcLpGEkwzR3
+          a+YEFMPad7YqieaQ6Y+72O9TXLvX05PmAgInEA==
+          EOF_KS
           gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
