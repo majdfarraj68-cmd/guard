@@ -48,8 +48,8 @@ jobs:
                   applicationId = "com.example.guard"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 11
-                  versionName = "11"
+                  versionCode = 12
+                  versionName = "12"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -206,15 +206,15 @@ jobs:
               private var ytOverlay = false
               private var locked = false
               private var inYt = false
-              private var lastOv = 0L
+              private var pending = false
               private var lastYt = 0L
               private var lastSeen = ""
               private var polls = 0
               private var nulls = 0
               private var evs = 0
               private var asks = 0
-              private var miss = 0
               private var missAct = 0
+              private var missWin = 0
               private var lastVis = "?"
               private val log = ArrayList<String>()
               private val h = Handler(Looper.getMainLooper())
@@ -231,7 +231,13 @@ jobs:
               private fun isYt(p: String) = p == "com.google.android.youtube" || p.endsWith(".android.youtube")
               private fun ignorable(p: String) = p == "com.android.systemui" || p.contains("inputmethod")
 
-              // true / false = YouTube window is / is not on screen; null = unknown
+              private fun note(s: String) {
+                  log.add(SimpleDateFormat("HH:mm:ss").format(Date()) + " " + s)
+                  if (log.size > 10) log.removeAt(0)
+                  Prefs.setDbg(this, "log", log.joinToString("\n"))
+              }
+
+              // true / false = a YouTube window is / is not on screen; null = unknown
               private fun ytOnScreen(): Boolean? {
                   return try {
                       val ws = windows
@@ -257,14 +263,32 @@ jobs:
                           val p = n?.packageName?.toString()
                           n?.recycle()
                           if (p == null) nulls++ else handle(p, "P")
+
                           val vis = ytOnScreen()
                           lastVis = vis?.toString() ?: "?"
                           val activeAway = p != null && !isYt(p) && !ignorable(p) && !(p == packageName && overlay != null)
-                          val winAway = vis == false || (vis == null && activeAway)
-                          if (winAway) miss++ else miss = 0
                           if (activeAway) missAct++ else missAct = 0
-                          if (miss >= 3 || missAct >= 2) inYt = false
-                          if (miss >= 3 && overlay != null && ytOverlay && !locked) hide()
+                          if (vis == false) missWin++ else missWin = 0
+
+                          if (missAct >= 3) {
+                              if (inYt || pending) note("END away")
+                              inYt = false
+                              pending = false
+                              if (overlay != null && ytOverlay && !locked) hide("away")
+                          }
+                          if (missWin >= 10 && overlay != null && ytOverlay && !locked) {
+                              inYt = false
+                              pending = false
+                              hide("no-yt-window")
+                          }
+                          // safety net: question owed, YouTube in front, but nothing on screen -> show it again
+                          if (pending && overlay == null && !locked && p != null && isYt(p) && Prefs.isActive(this@BlockerService)) {
+                              note("RESHOW")
+                              ytOverlay = true
+                              try { showQuestion() } catch (t: Throwable) {
+                                  Prefs.setDbg(this@BlockerService, "err", t.toString())
+                              }
+                          }
                       } catch (t: Throwable) {
                           Prefs.setDbg(this@BlockerService, "err", "poll: $t")
                       }
@@ -274,7 +298,7 @@ jobs:
               }
 
               private fun publish() {
-                  Prefs.setDbg(this, "stat", "poll=$polls null=$nulls ev=$evs ask=$asks yt=$lastVis miss=$miss inYt=$inYt ov=${overlay != null} lock=$locked")
+                  Prefs.setDbg(this, "stat", "poll=$polls null=$nulls ev=$evs ask=$asks yt=$lastVis away=$missAct pend=$pending inYt=$inYt ov=${overlay != null} lock=$locked")
               }
 
               override fun onServiceConnected() {
@@ -302,22 +326,20 @@ jobs:
               private fun handle(pkg: String, src: String) {
                   if (pkg != lastSeen) {
                       lastSeen = pkg
-                      log.add(SimpleDateFormat("HH:mm:ss").format(Date()) + " " + src + " " + pkg)
-                      if (log.size > 8) log.removeAt(0)
-                      Prefs.setDbg(this, "log", log.joinToString("\n"))
+                      note("$src $pkg")
                   }
                   if (locked) return
                   val now = System.currentTimeMillis()
                   if (isYt(pkg)) {
                       if (!Prefs.isActive(this) || overlay != null) { inYt = true; lastYt = now; return }
-                      if (now - lastYt > 20_000) inYt = false
+                      if (now - lastYt > 20_000) { inYt = false; pending = false }
                       lastYt = now
                       if (!inYt) {
                           inYt = true
                           asks++
                           ytOverlay = true
                           try {
-                              if (Prefs.isBlocked(this)) showMessage() else showQuestion()
+                              if (Prefs.isBlocked(this)) showMessage() else { pending = true; showQuestion() }
                           } catch (t: Throwable) {
                               Prefs.setDbg(this, "err", t.toString())
                               try { fallbackQuestion() } catch (_: Throwable) {}
@@ -328,20 +350,19 @@ jobs:
                   }
               }
 
-              fun testQuestion() {
-                  if (overlay != null) return
-                  ytOverlay = false
-                  try { showQuestion() } catch (t: Throwable) {
-                      Prefs.setDbg(this, "err", t.toString())
-                      try { fallbackQuestion() } catch (_: Throwable) {}
-                  }
-              }
-
               private fun answeredNo() {
+                  pending = false
                   inYt = true
                   lastYt = System.currentTimeMillis()
-                  miss = 0
-                  hide()
+                  missAct = 0
+                  hide("no")
+              }
+
+              private fun answeredYes() {
+                  pending = false
+                  Prefs.block(this)
+                  hide("yes")
+                  showMessage()
               }
 
               private fun fallbackQuestion() {
@@ -354,14 +375,8 @@ jobs:
                       setOnKeyListener { _, k, _ -> k == KeyEvent.KEYCODE_BACK }
                   }
                   r.addView(TextView(this).apply { text = "هل أنت في وقت شهوة الآن؟"; textSize = 26f; setTextColor(-1); gravity = Gravity.CENTER })
-                  r.addView(Button(this).apply {
-                      text = "نعم"
-                      setOnClickListener { Prefs.block(this@BlockerService); hide(); performGlobalAction(GLOBAL_ACTION_HOME) }
-                  })
-                  r.addView(Button(this).apply {
-                      text = "لا"
-                      setOnClickListener { answeredNo() }
-                  })
+                  r.addView(Button(this).apply { text = "نعم"; setOnClickListener { answeredYes() } })
+                  r.addView(Button(this).apply { text = "لا"; setOnClickListener { answeredNo() } })
                   show(r)
               }
 
@@ -375,7 +390,7 @@ jobs:
                   r.addView(Ui.space(this, 8))
                   r.addView(Ui.label(this, "كن صادقًا مع نفسك، القرار لك.", 15f, Ui.GRAY))
                   r.addView(Ui.space(this, 36))
-                  r.addView(Ui.button(this, "نعم، أنا كذلك", R.drawable.btn_red) { Prefs.block(this); hide(); showMessage() })
+                  r.addView(Ui.button(this, "نعم، أنا كذلك", R.drawable.btn_red) { answeredYes() })
                   r.addView(Ui.button(this, "لا، أنا بخير", R.drawable.btn_green) { answeredNo() })
                   show(r)
               }
@@ -383,6 +398,7 @@ jobs:
               private fun showMessage() {
                   locked = true
                   inYt = false
+                  pending = false
                   val r = page(R.drawable.bg_calm)
                   r.addView(Ui.label(this, "🌿", 72f))
                   r.addView(Ui.space(this, 20))
@@ -391,7 +407,7 @@ jobs:
                   r.addView(Ui.label(this, "جارٍ إرجاعك للشاشة الرئيسية…", 14f, 0xFFB2DFDB.toInt()))
                   show(r)
                   performGlobalAction(GLOBAL_ACTION_HOME)
-                  h.postDelayed({ locked = false; hide() }, 5000)
+                  h.postDelayed({ locked = false; hide("timer") }, 5000)
               }
 
               private fun page(bg: Int): LinearLayout {
@@ -408,7 +424,7 @@ jobs:
               }
 
               private fun show(root: LinearLayout) {
-                  hide()
+                  hide("replace")
                   val lp = WindowManager.LayoutParams(
                       WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
                       WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -417,13 +433,13 @@ jobs:
                   )
                   (getSystemService(WINDOW_SERVICE) as WindowManager).addView(root, lp)
                   overlay = root
-                  lastOv = System.currentTimeMillis()
+                  note("SHOW")
                   root.requestFocus()
               }
 
-              private fun hide() {
+              private fun hide(reason: String) {
                   overlay?.let {
-                      lastOv = System.currentTimeMillis()
+                      note("HIDE $reason")
                       try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {}
                   }
                   overlay = null
@@ -552,7 +568,7 @@ jobs:
                   startBtn.visibility = if (running) View.GONE else View.VISIBLE
                   stopBtn.visibility = if (running) View.VISIBLE else View.GONE
                   warnCard.visibility = if (BlockerService.instance != null) View.GONE else View.VISIBLE
-                  diag.text = "الإصدار 11\n" + Prefs.dbg(this, "stat") + "\n" + Prefs.dbg(this, "log") +
+                  diag.text = "الإصدار 12\n" + Prefs.dbg(this, "stat") + "\n" + Prefs.dbg(this, "log") +
                       Prefs.dbg(this, "err").let { if (it.isEmpty()) "" else "\nخطأ: $it" }
               }
           }
