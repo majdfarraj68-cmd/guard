@@ -48,8 +48,8 @@ jobs:
                   applicationId = "com.example.guard"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 8
-                  versionName = "8"
+                  versionCode = 9
+                  versionName = "9"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -175,6 +175,7 @@ jobs:
           <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
               android:accessibilityEventTypes="typeWindowStateChanged"
               android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagRetrieveInteractiveWindows"
               android:canRetrieveWindowContent="true"
               android:notificationTimeout="50"
               android:description="@string/service_desc" />
@@ -193,6 +194,7 @@ jobs:
           import android.view.View
           import android.view.WindowManager
           import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityWindowInfo
           import android.widget.Button
           import android.widget.LinearLayout
           import android.widget.TextView
@@ -201,6 +203,7 @@ jobs:
 
           class BlockerService : AccessibilityService() {
               private var overlay: View? = null
+              private var ytOverlay = false
               private var locked = false
               private var inYt = false
               private var lastOv = 0L
@@ -210,6 +213,8 @@ jobs:
               private var nulls = 0
               private var evs = 0
               private var asks = 0
+              private var miss = 0
+              private var lastVis = "?"
               private val log = ArrayList<String>()
               private val h = Handler(Looper.getMainLooper())
 
@@ -222,6 +227,27 @@ jobs:
                   "قرارك الآن بيحمي احترامك لنفسك.\nاترك الجوال وانشغل بشي ثاني."
               )
 
+              private fun isYt(p: String) = p == "com.google.android.youtube" || p.endsWith(".android.youtube")
+              private fun ignorable(p: String) = p == "com.android.systemui" || p.contains("inputmethod")
+
+              // true / false = YouTube window is / is not on screen; null = unknown
+              private fun ytOnScreen(): Boolean? {
+                  return try {
+                      val ws = windows
+                      if (ws == null || ws.isEmpty()) return null
+                      ws.any { w ->
+                          if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION) {
+                              false
+                          } else {
+                              val r = w.root
+                              val p = r?.packageName?.toString()
+                              r?.recycle()
+                              p != null && isYt(p)
+                          }
+                      }
+                  } catch (t: Throwable) { null }
+              }
+
               private val poll = object : Runnable {
                   override fun run() {
                       polls++
@@ -230,6 +256,18 @@ jobs:
                           val p = n?.packageName?.toString()
                           n?.recycle()
                           if (p == null) nulls++ else handle(p, "P")
+                          val vis = ytOnScreen()
+                          lastVis = vis?.toString() ?: "?"
+                          val away = when (vis) {
+                              true -> false
+                              false -> true
+                              null -> p != null && !isYt(p) && p != packageName && !ignorable(p)
+                          }
+                          if (away) miss++ else miss = 0
+                          if (miss >= 3) {
+                              inYt = false
+                              if (overlay != null && ytOverlay && !locked) hide()
+                          }
                       } catch (t: Throwable) {
                           Prefs.setDbg(this@BlockerService, "err", "poll: $t")
                       }
@@ -239,7 +277,7 @@ jobs:
               }
 
               private fun publish() {
-                  Prefs.setDbg(this, "stat", "poll=$polls null=$nulls ev=$evs ask=$asks inYt=$inYt ov=${overlay != null} lock=$locked")
+                  Prefs.setDbg(this, "stat", "poll=$polls null=$nulls ev=$evs ask=$asks yt=$lastVis miss=$miss inYt=$inYt ov=${overlay != null} lock=$locked")
               }
 
               override fun onServiceConnected() {
@@ -264,8 +302,6 @@ jobs:
 
               override fun onInterrupt() {}
 
-              private fun isYt(p: String) = p == "com.google.android.youtube" || p.endsWith(".android.youtube")
-
               private fun handle(pkg: String, src: String) {
                   if (pkg != lastSeen) {
                       lastSeen = pkg
@@ -282,6 +318,7 @@ jobs:
                       if (!inYt) {
                           inYt = true
                           asks++
+                          ytOverlay = true
                           try {
                               if (Prefs.isBlocked(this)) showMessage() else showQuestion()
                           } catch (t: Throwable) {
@@ -289,18 +326,14 @@ jobs:
                               try { fallbackQuestion() } catch (_: Throwable) {}
                           }
                       }
-                  } else if (pkg == packageName) {
-                      if (overlay != null) { lastYt = now; return }
-                      if (now - lastOv < 1500) return
-                      inYt = false
-                  } else if (pkg != "com.android.systemui" && !pkg.contains("inputmethod")) {
-                      inYt = false
-                      hide()
+                  } else if (pkg == packageName && overlay != null) {
+                      lastYt = now
                   }
               }
 
               fun testQuestion() {
                   if (overlay != null) return
+                  ytOverlay = false
                   try { showQuestion() } catch (t: Throwable) {
                       Prefs.setDbg(this, "err", t.toString())
                       try { fallbackQuestion() } catch (_: Throwable) {}
@@ -310,6 +343,7 @@ jobs:
               private fun answeredNo() {
                   inYt = true
                   lastYt = System.currentTimeMillis()
+                  miss = 0
                   hide()
               }
 
@@ -522,7 +556,7 @@ jobs:
                   startBtn.visibility = if (running) View.GONE else View.VISIBLE
                   stopBtn.visibility = if (running) View.VISIBLE else View.GONE
                   warnCard.visibility = if (BlockerService.instance != null) View.GONE else View.VISIBLE
-                  diag.text = "الإصدار 8\n" + Prefs.dbg(this, "stat") + "\n" + Prefs.dbg(this, "log") +
+                  diag.text = "الإصدار 9\n" + Prefs.dbg(this, "stat") + "\n" + Prefs.dbg(this, "log") +
                       Prefs.dbg(this, "err").let { if (it.isEmpty()) "" else "\nخطأ: $it" }
               }
           }
