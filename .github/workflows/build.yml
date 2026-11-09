@@ -48,8 +48,8 @@ jobs:
                   applicationId = "com.example.guard"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 12
-                  versionName = "12"
+                  versionCode = 13
+                  versionName = "13"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -194,7 +194,6 @@ jobs:
           import android.view.View
           import android.view.WindowManager
           import android.view.accessibility.AccessibilityEvent
-          import android.view.accessibility.AccessibilityWindowInfo
           import android.widget.Button
           import android.widget.LinearLayout
           import android.widget.TextView
@@ -203,19 +202,17 @@ jobs:
 
           class BlockerService : AccessibilityService() {
               private var overlay: View? = null
-              private var ytOverlay = false
               private var locked = false
-              private var inYt = false
               private var pending = false
-              private var lastYt = 0L
+              private var otherSince = true
+              private var lastYtObs = 0L
+              private var lastOv = 0L
+              private var cooldownUntil = 0L
               private var lastSeen = ""
               private var polls = 0
               private var nulls = 0
               private var evs = 0
               private var asks = 0
-              private var missAct = 0
-              private var missWin = 0
-              private var lastVis = "?"
               private val log = ArrayList<String>()
               private val h = Handler(Looper.getMainLooper())
 
@@ -237,24 +234,7 @@ jobs:
                   Prefs.setDbg(this, "log", log.joinToString("\n"))
               }
 
-              // true / false = a YouTube window is / is not on screen; null = unknown
-              private fun ytOnScreen(): Boolean? {
-                  return try {
-                      val ws = windows
-                      if (ws == null || ws.isEmpty()) return null
-                      ws.any { w ->
-                          if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION) {
-                              false
-                          } else {
-                              val r = w.root
-                              val p = r?.packageName?.toString()
-                              r?.recycle()
-                              p != null && isYt(p)
-                          }
-                      }
-                  } catch (t: Throwable) { null }
-              }
-
+              // diagnostics + auto-hide if protection was switched off while a question is showing
               private val poll = object : Runnable {
                   override fun run() {
                       polls++
@@ -262,33 +242,8 @@ jobs:
                           val n = rootInActiveWindow
                           val p = n?.packageName?.toString()
                           n?.recycle()
-                          if (p == null) nulls++ else handle(p, "P")
-
-                          val vis = ytOnScreen()
-                          lastVis = vis?.toString() ?: "?"
-                          val activeAway = p != null && !isYt(p) && !ignorable(p) && !(p == packageName && overlay != null)
-                          if (activeAway) missAct++ else missAct = 0
-                          if (vis == false) missWin++ else missWin = 0
-
-                          if (missAct >= 3) {
-                              if (inYt || pending) note("END away")
-                              inYt = false
-                              pending = false
-                              if (overlay != null && ytOverlay && !locked) hide("away")
-                          }
-                          if (missWin >= 10 && overlay != null && ytOverlay && !locked) {
-                              inYt = false
-                              pending = false
-                              hide("no-yt-window")
-                          }
-                          // safety net: question owed, YouTube in front, but nothing on screen -> show it again
-                          if (pending && overlay == null && !locked && p != null && isYt(p) && Prefs.isActive(this@BlockerService)) {
-                              note("RESHOW")
-                              ytOverlay = true
-                              try { showQuestion() } catch (t: Throwable) {
-                                  Prefs.setDbg(this@BlockerService, "err", t.toString())
-                              }
-                          }
+                          if (p == null) nulls++ else if (p != lastSeen) { lastSeen = p; note("P $p") }
+                          if (overlay != null && !locked && !Prefs.isActive(this@BlockerService)) hide("off")
                       } catch (t: Throwable) {
                           Prefs.setDbg(this@BlockerService, "err", "poll: $t")
                       }
@@ -298,7 +253,7 @@ jobs:
               }
 
               private fun publish() {
-                  Prefs.setDbg(this, "stat", "poll=$polls null=$nulls ev=$evs ask=$asks yt=$lastVis away=$missAct pend=$pending inYt=$inYt ov=${overlay != null} lock=$locked")
+                  Prefs.setDbg(this, "stat", "poll=$polls null=$nulls ev=$evs ask=$asks pend=$pending other=$otherSince ov=${overlay != null} lock=$locked")
               }
 
               override fun onServiceConnected() {
@@ -311,6 +266,7 @@ jobs:
               override fun onUnbind(intent: Intent?): Boolean {
                   instance = null
                   h.removeCallbacks(poll)
+                  hide("unbind")
                   return super.onUnbind(intent)
               }
 
@@ -318,43 +274,48 @@ jobs:
                   if (e == null) return
                   evs++
                   if (e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-                  e.packageName?.toString()?.let { handle(it, "E") }
+                  e.packageName?.toString()?.let { handle(it) }
               }
 
               override fun onInterrupt() {}
 
-              private fun handle(pkg: String, src: String) {
+              private fun handle(pkg: String) {
                   if (pkg != lastSeen) {
                       lastSeen = pkg
-                      note("$src $pkg")
+                      note("E $pkg")
                   }
                   if (locked) return
                   val now = System.currentTimeMillis()
                   if (isYt(pkg)) {
-                      if (!Prefs.isActive(this) || overlay != null) { inYt = true; lastYt = now; return }
-                      if (now - lastYt > 20_000) { inYt = false; pending = false }
-                      lastYt = now
-                      if (!inYt) {
-                          inYt = true
+                      if (!Prefs.isActive(this)) { lastYtObs = now; return }
+                      if (overlay != null) { lastYtObs = now; return }
+                      if (pending) { lastYtObs = now; askNow(); return }
+                      if (otherSince && now >= cooldownUntil) {
+                          otherSince = false
+                          lastYtObs = now
                           asks++
-                          ytOverlay = true
-                          try {
-                              if (Prefs.isBlocked(this)) showMessage() else { pending = true; showQuestion() }
-                          } catch (t: Throwable) {
-                              Prefs.setDbg(this, "err", t.toString())
-                              try { fallbackQuestion() } catch (_: Throwable) {}
-                          }
+                          if (Prefs.isBlocked(this)) showMessage() else { pending = true; askNow() }
+                          return
                       }
-                  } else if (pkg == packageName && overlay != null) {
-                      lastYt = now
+                      lastYtObs = now
+                  } else if (!ignorable(pkg)) {
+                      if (pkg == packageName && (overlay != null || now - lastOv < 1500)) return
+                      val guard = if (overlay != null) 4000 else 1500
+                      if (now - lastYtObs > guard) otherSince = true
+                  }
+              }
+
+              private fun askNow() {
+                  try { showQuestion() } catch (t: Throwable) {
+                      Prefs.setDbg(this, "err", t.toString())
+                      try { fallbackQuestion() } catch (_: Throwable) {}
                   }
               }
 
               private fun answeredNo() {
                   pending = false
-                  inYt = true
-                  lastYt = System.currentTimeMillis()
-                  missAct = 0
+                  lastYtObs = System.currentTimeMillis()
+                  cooldownUntil = lastYtObs + 3000
                   hide("no")
               }
 
@@ -397,7 +358,6 @@ jobs:
 
               private fun showMessage() {
                   locked = true
-                  inYt = false
                   pending = false
                   val r = page(R.drawable.bg_calm)
                   r.addView(Ui.label(this, "🌿", 72f))
@@ -407,6 +367,7 @@ jobs:
                   r.addView(Ui.label(this, "جارٍ إرجاعك للشاشة الرئيسية…", 14f, 0xFFB2DFDB.toInt()))
                   show(r)
                   performGlobalAction(GLOBAL_ACTION_HOME)
+                  otherSince = true
                   h.postDelayed({ locked = false; hide("timer") }, 5000)
               }
 
@@ -439,6 +400,7 @@ jobs:
 
               private fun hide(reason: String) {
                   overlay?.let {
+                      lastOv = System.currentTimeMillis()
                       note("HIDE $reason")
                       try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {}
                   }
@@ -568,7 +530,7 @@ jobs:
                   startBtn.visibility = if (running) View.GONE else View.VISIBLE
                   stopBtn.visibility = if (running) View.VISIBLE else View.GONE
                   warnCard.visibility = if (BlockerService.instance != null) View.GONE else View.VISIBLE
-                  diag.text = "الإصدار 12\n" + Prefs.dbg(this, "stat") + "\n" + Prefs.dbg(this, "log") +
+                  diag.text = "الإصدار 13\n" + Prefs.dbg(this, "stat") + "\n" + Prefs.dbg(this, "log") +
                       Prefs.dbg(this, "err").let { if (it.isEmpty()) "" else "\nخطأ: $it" }
               }
           }
