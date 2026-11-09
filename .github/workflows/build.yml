@@ -48,8 +48,8 @@ jobs:
                   applicationId = "com.example.guard"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 9
-                  versionName = "9"
+                  versionCode = 11
+                  versionName = "11"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -214,6 +214,7 @@ jobs:
               private var evs = 0
               private var asks = 0
               private var miss = 0
+              private var missAct = 0
               private var lastVis = "?"
               private val log = ArrayList<String>()
               private val h = Handler(Looper.getMainLooper())
@@ -258,16 +259,12 @@ jobs:
                           if (p == null) nulls++ else handle(p, "P")
                           val vis = ytOnScreen()
                           lastVis = vis?.toString() ?: "?"
-                          val away = when (vis) {
-                              true -> false
-                              false -> true
-                              null -> p != null && !isYt(p) && p != packageName && !ignorable(p)
-                          }
-                          if (away) miss++ else miss = 0
-                          if (miss >= 3) {
-                              inYt = false
-                              if (overlay != null && ytOverlay && !locked) hide()
-                          }
+                          val activeAway = p != null && !isYt(p) && !ignorable(p) && !(p == packageName && overlay != null)
+                          val winAway = vis == false || (vis == null && activeAway)
+                          if (winAway) miss++ else miss = 0
+                          if (activeAway) missAct++ else missAct = 0
+                          if (miss >= 3 || missAct >= 2) inYt = false
+                          if (miss >= 3 && overlay != null && ytOverlay && !locked) hide()
                       } catch (t: Throwable) {
                           Prefs.setDbg(this@BlockerService, "err", "poll: $t")
                       }
@@ -491,11 +488,10 @@ jobs:
                   col.addView(card, LinearLayout.LayoutParams(-1, -2))
                   col.addView(Ui.space(c, 10))
 
-                  startBtn = Ui.button(c, "ابدأ الحماية", R.drawable.btn_green) { Prefs.start(c); refresh() }
+                  startBtn = Ui.button(c, "تشغيل الحماية", R.drawable.btn_green) { Prefs.start(c); refresh() }
                   stopBtn = Ui.button(c, "إيقاف الحماية (بعد 10 دقائق)", R.drawable.btn_outline) { Prefs.requestStop(c); refresh() }
                   col.addView(startBtn)
                   col.addView(stopBtn)
-                  col.addView(Ui.button(c, "اختبار شاشة السؤال", R.drawable.btn_outline) { BlockerService.instance?.testQuestion() })
 
                   warnCard = LinearLayout(c).apply {
                       orientation = LinearLayout.VERTICAL
@@ -538,7 +534,7 @@ jobs:
                       !on -> {
                           statusTitle.text = "الحماية متوقفة"
                           statusTitle.setTextColor(0xFFB0BEC5.toInt())
-                          statusSub.text = "اضغط ابدأ لتفعيل الدرع"
+                          statusSub.text = "اضغط تشغيل لتفعيل الدرع"
                       }
                       st > 0 -> {
                           statusTitle.text = "الحماية ستتوقف قريبًا"
@@ -556,7 +552,7 @@ jobs:
                   startBtn.visibility = if (running) View.GONE else View.VISIBLE
                   stopBtn.visibility = if (running) View.VISIBLE else View.GONE
                   warnCard.visibility = if (BlockerService.instance != null) View.GONE else View.VISIBLE
-                  diag.text = "الإصدار 9\n" + Prefs.dbg(this, "stat") + "\n" + Prefs.dbg(this, "log") +
+                  diag.text = "الإصدار 11\n" + Prefs.dbg(this, "stat") + "\n" + Prefs.dbg(this, "log") +
                       Prefs.dbg(this, "err").let { if (it.isEmpty()) "" else "\nخطأ: $it" }
               }
           }
