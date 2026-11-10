@@ -48,8 +48,8 @@ jobs:
                   applicationId = "com.example.guard"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 16
-                  versionName = "16"
+                  versionCode = 17
+                  versionName = "17"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -73,6 +73,9 @@ jobs:
           cat > app/src/main/AndroidManifest.xml <<'EOF_FILE'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <queries>
+                  <package android:name="com.google.android.youtube" />
+              </queries>
               <application
                   android:label="@string/app_name"
                   android:theme="@android:style/Theme.Material.Light.NoActionBar">
@@ -83,16 +86,12 @@ jobs:
                       </intent-filter>
                   </activity>
                   <service
-                      android:name=".BlockerService"
-                      android:exported="true"
-                      android:label="@string/app_name"
-                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      android:name=".BlockVpnService"
+                      android:exported="false"
+                      android:permission="android.permission.BIND_VPN_SERVICE">
                       <intent-filter>
-                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                          <action android:name="android.net.VpnService" />
                       </intent-filter>
-                      <meta-data
-                          android:name="android.accessibilityservice"
-                          android:resource="@xml/accessibility_config" />
                   </service>
               </application>
           </manifest>
@@ -150,173 +149,85 @@ jobs:
           cat > app/src/main/res/values/strings.xml <<'EOF_FILE'
           <resources>
               <string name="app_name">حارس</string>
-              <string name="service_desc">يمنع فتح تطبيق YouTube عندما تكون الحماية مفعّلة.</string>
           </resources>
           EOF_FILE
-          mkdir -p app/src/main/res/xml
-          cat > app/src/main/res/xml/accessibility_config.xml <<'EOF_FILE'
-          <?xml version="1.0" encoding="utf-8"?>
-          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-              android:accessibilityEventTypes="typeWindowStateChanged"
-              android:accessibilityFeedbackType="feedbackGeneric"
-              android:canRetrieveWindowContent="true"
-              android:notificationTimeout="50"
-              android:description="@string/service_desc" />
-          EOF_FILE
           mkdir -p app/src/main/java/com/example/guard
-          cat > app/src/main/java/com/example/guard/BlockerService.kt <<'EOF_FILE'
+          cat > app/src/main/java/com/example/guard/BlockVpnService.kt <<'EOF_FILE'
           package com.example.guard
 
-          import android.accessibilityservice.AccessibilityService
           import android.content.Intent
-          import android.graphics.PixelFormat
-          import android.os.Handler
-          import android.os.Looper
-          import android.view.Gravity
-          import android.view.View
-          import android.view.WindowManager
-          import android.view.accessibility.AccessibilityEvent
-          import android.widget.LinearLayout
-          import java.text.SimpleDateFormat
-          import java.util.Date
+          import android.net.VpnService
+          import android.os.ParcelFileDescriptor
+          import java.io.FileInputStream
 
-          class BlockerService : AccessibilityService() {
-              private var overlay: View? = null
-              private var overlaySince = 0L
-              private var lastHome = 0L
-              private var ignoreEventsUntil = 0L
-              private var awayCount = 0
-              private var polls = 0
-              private var evs = 0
-              private var blocks = 0
-              private var lastP = "-"
-              private val h = Handler(Looper.getMainLooper())
+          // A local VPN that captures ONLY the YouTube app's traffic and drops it,
+          // so the YouTube app has no internet while protection is on.
+          class BlockVpnService : VpnService() {
+              private var tun: ParcelFileDescriptor? = null
+              private var reader: Thread? = null
 
-              companion object { var instance: BlockerService? = null }
+              companion object {
+                  @Volatile var running = false
+                  const val ACTION_STOP = "com.example.guard.STOP"
+                  const val YT = "com.google.android.youtube"
+              }
 
-              private val msgs = listOf(
-                  "أنت أقوى من هذه اللحظة 💪\nالرغبة موجة وبتعدّي",
-                  "ابتعد عن الجوال شوي 🌿\nقم، اغسل وجهك، وامشِ",
-                  "قرارك الآن بيحمي احترامك لنفسك 🛡️"
-              )
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent?.action == ACTION_STOP) {
+                      stopVpn()
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+                  startVpn()
+                  return START_STICKY
+              }
 
-              private fun isYt(p: String) = p == "com.google.android.youtube" || p.endsWith(".android.youtube")
-              private fun ignorable(p: String) = p == "com.android.systemui" || p.contains("inputmethod")
-
-              private val poll = object : Runnable {
-                  override fun run() {
-                      polls++
-                      try { tick() } catch (t: Throwable) {
-                          Prefs.setDbg(this@BlockerService, "err", t.toString())
+              private fun startVpn() {
+                  if (tun != null) return
+                  try {
+                      val pfd = Builder()
+                          .setSession("حارس")
+                          .setBlocking(true)
+                          .addAddress("10.77.0.1", 32)
+                          .addRoute("0.0.0.0", 0)
+                          .addAddress("fd00:77::1", 128)
+                          .addRoute("::", 0)
+                          .addAllowedApplication(YT)
+                          .establish()
+                      if (pfd == null) {
+                          Prefs.setDbg(this, "err", "establish returned null")
+                          return
                       }
-                      if (polls % 5 == 0) publish()
-                      h.postDelayed(this, 300)
+                      tun = pfd
+                      running = true
+                      Prefs.setDbg(this, "err", "")
+                      reader = Thread {
+                          val input = FileInputStream(pfd.fileDescriptor)
+                          val buf = ByteArray(32767)
+                          try { while (input.read(buf) >= 0) { /* drop everything */ } } catch (_: Exception) {}
+                      }.also { it.isDaemon = true; it.start() }
+                  } catch (t: Throwable) {
+                      running = false
+                      Prefs.setDbg(this, "err", t.toString())
                   }
               }
 
-              private fun publish() {
-                  Prefs.setDbg(this, "stat", "poll=$polls ev=$evs block=$blocks p=$lastP ov=${overlay != null}")
+              private fun stopVpn() {
+                  running = false
+                  try { tun?.close() } catch (_: Exception) {}
+                  tun = null
+                  reader?.interrupt()
+                  reader = null
               }
 
-              private fun tick() {
-                  val n = rootInActiveWindow
-                  val p = n?.packageName?.toString()
-                  n?.recycle()
-                  if (p != null) lastP = p
-                  if (!Prefs.isOn(this)) {
-                      if (overlay != null) hide()
-                      awayCount = 0
-                      return
-                  }
-                  if (p != null && isYt(p)) {
-                      awayCount = 0
-                      if (overlay == null) startBlock()
-                      pressHome()
-                  } else if (overlay != null) {
-                      if (p != null && !ignorable(p)) awayCount++
-                      if (awayCount >= 2 || System.currentTimeMillis() - overlaySince > 60_000) hide()
-                  } else {
-                      awayCount = 0
-                  }
+              override fun onRevoke() {
+                  stopVpn()
+                  super.onRevoke()
               }
 
-              override fun onServiceConnected() {
-                  super.onServiceConnected()
-                  instance = this
-                  h.removeCallbacks(poll)
-                  h.post(poll)
-              }
-
-              override fun onUnbind(intent: Intent?): Boolean {
-                  instance = null
-                  h.removeCallbacks(poll)
-                  hide()
-                  return super.onUnbind(intent)
-              }
-
-              override fun onAccessibilityEvent(e: AccessibilityEvent?) {
-                  if (e == null) return
-                  evs++
-                  if (e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-                  val pkg = e.packageName?.toString() ?: return
-                  if (!isYt(pkg) || !Prefs.isOn(this)) return
-                  if (System.currentTimeMillis() < ignoreEventsUntil) return
-                  if (overlay == null) startBlock()
-                  pressHome()
-              }
-
-              override fun onInterrupt() {}
-
-              private fun pressHome() {
-                  val now = System.currentTimeMillis()
-                  if (now - lastHome < 600) return
-                  lastHome = now
-                  performGlobalAction(GLOBAL_ACTION_HOME)
-                  Prefs.setDbg(this, "last", SimpleDateFormat("HH:mm:ss").format(Date()))
-              }
-
-              private fun startBlock() {
-                  blocks++
-                  try { show() } catch (t: Throwable) {
-                      Prefs.setDbg(this, "err", "show: $t")
-                  }
-              }
-
-              private fun show() {
-                  hide()
-                  val p = Ui.dp(this, 32)
-                  val r = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                      gravity = Gravity.CENTER
-                      setBackgroundResource(R.drawable.bg_main)
-                      setPadding(p, p, p, p)
-                      layoutDirection = View.LAYOUT_DIRECTION_RTL
-                  }
-                  r.addView(Ui.label(this, "🛡️", 72f))
-                  r.addView(Ui.space(this, 16))
-                  r.addView(Ui.label(this, "YouTube ممنوع الآن", 28f, bold = true))
-                  r.addView(Ui.space(this, 16))
-                  r.addView(Ui.label(this, msgs.random(), 18f, Ui.GRAY))
-                  val lp = WindowManager.LayoutParams(
-                      WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
-                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                      PixelFormat.OPAQUE
-                  )
-                  (getSystemService(WINDOW_SERVICE) as WindowManager).addView(r, lp)
-                  overlay = r
-                  overlaySince = System.currentTimeMillis()
-                  awayCount = 0
-              }
-
-              private fun hide() {
-                  overlay?.let {
-                      try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {}
-                      ignoreEventsUntil = System.currentTimeMillis() + 1500
-                  }
-                  overlay = null
+              override fun onDestroy() {
+                  stopVpn()
+                  super.onDestroy()
               }
           }
           EOF_FILE
@@ -327,10 +238,10 @@ jobs:
           import android.app.Activity
           import android.content.Context
           import android.content.Intent
+          import android.net.VpnService
           import android.os.Bundle
           import android.os.Handler
           import android.os.Looper
-          import android.provider.Settings
           import android.view.Gravity
           import android.view.View
           import android.widget.LinearLayout
@@ -341,11 +252,9 @@ jobs:
               private lateinit var statusTitle: TextView
               private lateinit var statusSub: TextView
               private lateinit var toggle: TextView
-              private lateinit var warnCard: LinearLayout
-              private lateinit var lastTxt: TextView
-              private lateinit var diag: TextView
+              private lateinit var errTxt: TextView
               private val h = Handler(Looper.getMainLooper())
-              private val tick = object : Runnable { override fun run() { refresh(); h.postDelayed(this, 1500) } }
+              private val tick = object : Runnable { override fun run() { refresh(); h.postDelayed(this, 1000) } }
 
               override fun onCreate(b: Bundle?) {
                   super.onCreate(b)
@@ -378,30 +287,15 @@ jobs:
                   col.addView(card, LinearLayout.LayoutParams(-1, -2))
                   col.addView(Ui.space(c, 14))
 
-                  toggle = Ui.button(c, "Start", R.drawable.btn_green) { Prefs.setOn(c, !Prefs.isOn(c)); refresh() }
+                  toggle = Ui.button(c, "Start", R.drawable.btn_green) { onToggle() }
                   col.addView(toggle)
 
-                  warnCard = LinearLayout(c).apply {
-                      orientation = LinearLayout.VERTICAL
-                      gravity = Gravity.CENTER
-                      setBackgroundResource(R.drawable.bg_warn)
-                      setPadding(Ui.dp(c, 20), Ui.dp(c, 20), Ui.dp(c, 20), Ui.dp(c, 20))
-                  }
-                  warnCard.addView(Ui.label(c, "⚠️ فعّل خدمة الحماية", 17f, 0xFFFFD54F.toInt(), true))
-                  warnCard.addView(Ui.space(c, 6))
-                  warnCard.addView(Ui.label(c, "افتح الإعدادات ← حارس ← شغّله. إذا كان الخيار رمادي: معلومات التطبيق ← ⋮ ← السماح بالإعدادات المقيّدة", 13f, Ui.GRAY))
-                  warnCard.addView(Ui.button(c, "فتح الإعدادات", R.drawable.btn_amber, 0xFF1B1B1B.toInt()) {
-                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                  })
-                  col.addView(Ui.space(c, 18))
-                  col.addView(warnCard, LinearLayout.LayoutParams(-1, -2))
-
-                  col.addView(Ui.space(c, 36))
-                  lastTxt = Ui.label(c, "", 12f, 0xFF7C93A0.toInt())
-                  col.addView(lastTxt)
-                  col.addView(Ui.space(c, 8))
-                  diag = Ui.label(c, "", 11f, 0xFF7C93A0.toInt())
-                  col.addView(diag)
+                  col.addView(Ui.space(c, 28))
+                  col.addView(Ui.label(c, "عند التشغيل يظهر رمز مفتاح VPN في شريط الحالة، وهذا طبيعي. YouTube يفتح لكن بدون إنترنت.", 13f, Ui.GRAY))
+                  col.addView(Ui.space(c, 20))
+                  errTxt = Ui.label(c, "", 11f, 0xFFFF8A80.toInt())
+                  col.addView(errTxt)
+                  col.addView(Ui.label(c, "الإصدار 17", 11f, 0xFF7C93A0.toInt()))
 
                   setContentView(ScrollView(c).apply {
                       setBackgroundResource(R.drawable.bg_main)
@@ -410,28 +304,46 @@ jobs:
                   })
               }
 
+              private fun onToggle() {
+                  if (BlockVpnService.running) {
+                      startService(Intent(this, BlockVpnService::class.java).setAction(BlockVpnService.ACTION_STOP))
+                      h.postDelayed({ refresh() }, 400)
+                  } else {
+                      val i = VpnService.prepare(this)
+                      if (i != null) startActivityForResult(i, 77) else launch()
+                  }
+              }
+
+              private fun launch() {
+                  startService(Intent(this, BlockVpnService::class.java))
+                  h.postDelayed({ refresh() }, 600)
+              }
+
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == 77 && resultCode == RESULT_OK) launch()
+              }
+
               override fun onResume() { super.onResume(); h.post(tick) }
 
               override fun onPause() { super.onPause(); h.removeCallbacks(tick) }
 
               private fun refresh() {
-                  val on = Prefs.isOn(this)
+                  val on = BlockVpnService.running
                   if (on) {
                       statusTitle.text = "الحماية شغّالة ✅"
                       statusTitle.setTextColor(0xFF69F0AE.toInt())
-                      statusSub.text = "YouTube ممنوع الآن"
+                      statusSub.text = "YouTube بدون إنترنت الآن"
                   } else {
                       statusTitle.text = "الحماية متوقفة"
                       statusTitle.setTextColor(0xFFB0BEC5.toInt())
-                      statusSub.text = "YouTube مسموح"
+                      statusSub.text = "YouTube يشتغل عادي"
                   }
                   toggle.text = if (on) "Stop" else "Start"
                   toggle.setBackgroundResource(if (on) R.drawable.btn_red else R.drawable.btn_green)
                   toggle.setPadding(Ui.dp(this, 16), Ui.dp(this, 18), Ui.dp(this, 16), Ui.dp(this, 18))
-                  warnCard.visibility = if (BlockerService.instance != null) View.GONE else View.VISIBLE
-                  val last = Prefs.dbg(this, "last")
-                  diag.text = Prefs.dbg(this, "stat") + Prefs.dbg(this, "err").let { if (it.isEmpty()) "" else "\nخطأ: $it" }
-                  lastTxt.text = if (last.isEmpty()) "الإصدار 16" else "الإصدار 16 · آخر منع: $last"
+                  val err = Prefs.dbg(this, "err")
+                  errTxt.text = if (err.isEmpty()) "" else "خطأ: $err"
               }
           }
           EOF_FILE
