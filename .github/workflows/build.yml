@@ -48,8 +48,8 @@ jobs:
                   applicationId = "com.example.guard"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 15
-                  versionName = "15"
+                  versionCode = 16
+                  versionName = "16"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -159,7 +159,7 @@ jobs:
           <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
               android:accessibilityEventTypes="typeWindowStateChanged"
               android:accessibilityFeedbackType="feedbackGeneric"
-              android:canRetrieveWindowContent="false"
+              android:canRetrieveWindowContent="true"
               android:notificationTimeout="50"
               android:description="@string/service_desc" />
           EOF_FILE
@@ -169,52 +169,155 @@ jobs:
 
           import android.accessibilityservice.AccessibilityService
           import android.content.Intent
+          import android.graphics.PixelFormat
+          import android.os.Handler
+          import android.os.Looper
+          import android.view.Gravity
+          import android.view.View
+          import android.view.WindowManager
           import android.view.accessibility.AccessibilityEvent
-          import android.widget.Toast
+          import android.widget.LinearLayout
           import java.text.SimpleDateFormat
           import java.util.Date
 
           class BlockerService : AccessibilityService() {
+              private var overlay: View? = null
+              private var overlaySince = 0L
               private var lastHome = 0L
-              private var lastToast = 0L
+              private var ignoreEventsUntil = 0L
+              private var awayCount = 0
+              private var polls = 0
+              private var evs = 0
+              private var blocks = 0
+              private var lastP = "-"
+              private val h = Handler(Looper.getMainLooper())
 
               companion object { var instance: BlockerService? = null }
 
               private val msgs = listOf(
-                  "YouTube ممنوع الآن 🛡️ أنت أقوى من هذه اللحظة",
-                  "الحماية شغّالة 💪 ابتعد عن الجوال شوي",
-                  "قرارك بيحمي احترامك لنفسك 🌿"
+                  "أنت أقوى من هذه اللحظة 💪\nالرغبة موجة وبتعدّي",
+                  "ابتعد عن الجوال شوي 🌿\nقم، اغسل وجهك، وامشِ",
+                  "قرارك الآن بيحمي احترامك لنفسك 🛡️"
               )
 
               private fun isYt(p: String) = p == "com.google.android.youtube" || p.endsWith(".android.youtube")
+              private fun ignorable(p: String) = p == "com.android.systemui" || p.contains("inputmethod")
+
+              private val poll = object : Runnable {
+                  override fun run() {
+                      polls++
+                      try { tick() } catch (t: Throwable) {
+                          Prefs.setDbg(this@BlockerService, "err", t.toString())
+                      }
+                      if (polls % 5 == 0) publish()
+                      h.postDelayed(this, 300)
+                  }
+              }
+
+              private fun publish() {
+                  Prefs.setDbg(this, "stat", "poll=$polls ev=$evs block=$blocks p=$lastP ov=${overlay != null}")
+              }
+
+              private fun tick() {
+                  val n = rootInActiveWindow
+                  val p = n?.packageName?.toString()
+                  n?.recycle()
+                  if (p != null) lastP = p
+                  if (!Prefs.isOn(this)) {
+                      if (overlay != null) hide()
+                      awayCount = 0
+                      return
+                  }
+                  if (p != null && isYt(p)) {
+                      awayCount = 0
+                      if (overlay == null) startBlock()
+                      pressHome()
+                  } else if (overlay != null) {
+                      if (p != null && !ignorable(p)) awayCount++
+                      if (awayCount >= 2 || System.currentTimeMillis() - overlaySince > 60_000) hide()
+                  } else {
+                      awayCount = 0
+                  }
+              }
 
               override fun onServiceConnected() {
                   super.onServiceConnected()
                   instance = this
+                  h.removeCallbacks(poll)
+                  h.post(poll)
               }
 
               override fun onUnbind(intent: Intent?): Boolean {
                   instance = null
+                  h.removeCallbacks(poll)
+                  hide()
                   return super.onUnbind(intent)
               }
 
               override fun onAccessibilityEvent(e: AccessibilityEvent?) {
-                  if (e == null || e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+                  if (e == null) return
+                  evs++
+                  if (e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
                   val pkg = e.packageName?.toString() ?: return
                   if (!isYt(pkg) || !Prefs.isOn(this)) return
-                  val now = System.currentTimeMillis()
-                  if (now - lastHome > 400) {
-                      lastHome = now
-                      performGlobalAction(GLOBAL_ACTION_HOME)
-                      Prefs.setDbg(this, "last", SimpleDateFormat("HH:mm:ss").format(Date()))
-                  }
-                  if (now - lastToast > 3000) {
-                      lastToast = now
-                      try { Toast.makeText(this, msgs.random(), Toast.LENGTH_SHORT).show() } catch (_: Throwable) {}
-                  }
+                  if (System.currentTimeMillis() < ignoreEventsUntil) return
+                  if (overlay == null) startBlock()
+                  pressHome()
               }
 
               override fun onInterrupt() {}
+
+              private fun pressHome() {
+                  val now = System.currentTimeMillis()
+                  if (now - lastHome < 600) return
+                  lastHome = now
+                  performGlobalAction(GLOBAL_ACTION_HOME)
+                  Prefs.setDbg(this, "last", SimpleDateFormat("HH:mm:ss").format(Date()))
+              }
+
+              private fun startBlock() {
+                  blocks++
+                  try { show() } catch (t: Throwable) {
+                      Prefs.setDbg(this, "err", "show: $t")
+                  }
+              }
+
+              private fun show() {
+                  hide()
+                  val p = Ui.dp(this, 32)
+                  val r = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER
+                      setBackgroundResource(R.drawable.bg_main)
+                      setPadding(p, p, p, p)
+                      layoutDirection = View.LAYOUT_DIRECTION_RTL
+                  }
+                  r.addView(Ui.label(this, "🛡️", 72f))
+                  r.addView(Ui.space(this, 16))
+                  r.addView(Ui.label(this, "YouTube ممنوع الآن", 28f, bold = true))
+                  r.addView(Ui.space(this, 16))
+                  r.addView(Ui.label(this, msgs.random(), 18f, Ui.GRAY))
+                  val lp = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                      PixelFormat.OPAQUE
+                  )
+                  (getSystemService(WINDOW_SERVICE) as WindowManager).addView(r, lp)
+                  overlay = r
+                  overlaySince = System.currentTimeMillis()
+                  awayCount = 0
+              }
+
+              private fun hide() {
+                  overlay?.let {
+                      try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {}
+                      ignoreEventsUntil = System.currentTimeMillis() + 1500
+                  }
+                  overlay = null
+              }
           }
           EOF_FILE
           mkdir -p app/src/main/java/com/example/guard
@@ -240,6 +343,7 @@ jobs:
               private lateinit var toggle: TextView
               private lateinit var warnCard: LinearLayout
               private lateinit var lastTxt: TextView
+              private lateinit var diag: TextView
               private val h = Handler(Looper.getMainLooper())
               private val tick = object : Runnable { override fun run() { refresh(); h.postDelayed(this, 1500) } }
 
@@ -295,6 +399,9 @@ jobs:
                   col.addView(Ui.space(c, 36))
                   lastTxt = Ui.label(c, "", 12f, 0xFF7C93A0.toInt())
                   col.addView(lastTxt)
+                  col.addView(Ui.space(c, 8))
+                  diag = Ui.label(c, "", 11f, 0xFF7C93A0.toInt())
+                  col.addView(diag)
 
                   setContentView(ScrollView(c).apply {
                       setBackgroundResource(R.drawable.bg_main)
@@ -323,7 +430,8 @@ jobs:
                   toggle.setPadding(Ui.dp(this, 16), Ui.dp(this, 18), Ui.dp(this, 16), Ui.dp(this, 18))
                   warnCard.visibility = if (BlockerService.instance != null) View.GONE else View.VISIBLE
                   val last = Prefs.dbg(this, "last")
-                  lastTxt.text = if (last.isEmpty()) "الإصدار 15" else "الإصدار 15 · آخر منع: $last"
+                  diag.text = Prefs.dbg(this, "stat") + Prefs.dbg(this, "err").let { if (it.isEmpty()) "" else "\nخطأ: $it" }
+                  lastTxt.text = if (last.isEmpty()) "الإصدار 16" else "الإصدار 16 · آخر منع: $last"
               }
           }
           EOF_FILE
