@@ -48,8 +48,8 @@ jobs:
                   applicationId = "com.example.guard"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 20
-                  versionName = "20"
+                  versionCode = 21
+                  versionName = "21"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -83,7 +83,7 @@ jobs:
               <application
                   android:label="@string/app_name"
                   android:theme="@android:style/Theme.Material.NoActionBar">
-                  <activity android:name=".MainActivity" android:exported="true">
+                  <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -120,6 +120,316 @@ jobs:
           <resources>
               <string name="app_name">ثبات</string>
           </resources>
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/guard
+          cat > app/src/main/java/com/example/guard/AchievementsPage.kt <<'EOF_FILE'
+          package com.example.guard
+
+          import android.app.AlertDialog
+          import android.graphics.drawable.GradientDrawable
+          import android.view.Gravity
+          import android.view.View
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import java.time.LocalDate
+          import java.time.YearMonth
+          import java.time.format.DateTimeFormatter
+          import java.util.Locale
+
+          // "إنجازاتي": statistics, last-7-days activity, badges and the achievements calendar (full history).
+          class AchievementsPage(a: MainActivity) : ScrollPage(a) {
+              private val body: LinearLayout = T.vbox(a)
+              private var ym: YearMonth = YearMonth.now()
+              private var sig = ""
+
+              init {
+                  add(header("إنجازاتي", "كل ما بنيته محفوظ"), 0)
+                  add(body, 0)
+              }
+
+              private fun tile(label: String, value: String, tint: Int): View {
+                  val box = T.cardBox(c, 20, 16)
+                  box.gravity = Gravity.CENTER_HORIZONTAL
+                  box.addView(T.text(c, value, 26f, T.TEXT, true))
+                  box.addView(T.text(c, label, 12.5f, tint, true), T.lpd(c, T.WRAP, T.WRAP, 0, 2, 0, 0))
+                  return box
+              }
+
+              private fun statsGrid(s: GameStore.Snapshot): View {
+                  val box = T.vbox(c)
+                  val items = listOf(
+                      Triple("أيام الالتزام", s.totalSuccess.toString(), T.GREEN),
+                      Triple("أفضل سلسلة", s.best.toString(), T.BLUE),
+                      Triple("السلسلة الحالية", s.cur.toString(), T.AMBER),
+                      Triple("الشارات", s.earned.size.toString() + "/" + GameMath.BADGES.size, T.AMBER),
+                      Triple("المستوى الحالي", s.level.toString(), T.GREEN),
+                      Triple("مجموع XP", s.xp.toString(), T.BLUE)
+                  )
+                  var i = 0
+                  while (i < items.size) {
+                      val row = T.hbox(c)
+                      for (j in 0 until 2) {
+                          val item = items[i + j]
+                          row.addView(tile(item.first, item.second, item.third), LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                          if (j == 0) row.addView(T.space(c, 12, 1))
+                      }
+                      box.addView(row, T.lpd(c, T.MATCH, T.WRAP, 0, if (i == 0) 0 else 12, 0, 0))
+                      i += 2
+                  }
+                  return box
+              }
+
+              private fun weekChart(today: Long, masks: Map<Long, Int>, log: Map<Long, Int>, jd: Set<Long>): View {
+                  val card = T.cardBox(c)
+                  card.addView(T.text(c, "نشاط آخر 7 أيام (XP)", 16f, T.TEXT, true))
+                  val xps = IntArray(7)
+                  var mx = 0
+                  for (i in 0 until 7) {
+                      xps[i] = GameMath.dayXpFor(today - 6 + i, masks, log, jd)
+                      if (xps[i] > mx) mx = xps[i]
+                  }
+                  val row = LinearLayout(c)
+                  row.orientation = LinearLayout.HORIZONTAL
+                  row.gravity = Gravity.BOTTOM
+                  val maxH = T.dp(c, 70)
+                  for (i in 0 until 7) {
+                      val col = T.vbox(c)
+                      col.gravity = Gravity.CENTER_HORIZONTAL
+                      val h = if (mx == 0) T.dp(c, 4) else maxOf(T.dp(c, 4), xps[i] * maxH / mx)
+                      val bar = View(c)
+                      bar.background = T.grad(c, T.GREEN_D, T.GREEN, 6)
+                      col.addView(bar, LinearLayout.LayoutParams(T.dp(c, 16), h))
+                      col.addView(T.text(c, LocalDate.ofEpochDay(today - 6 + i).dayOfMonth.toString(), 11f, T.MUTED), T.lpd(c, T.WRAP, T.WRAP, 0, 6, 0, 0))
+                      row.addView(col, LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                  }
+                  card.addView(row, T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
+                  return card
+              }
+
+              private fun badgeTile(id: String, earned: Boolean): View {
+                  val box = T.vbox(c)
+                  box.gravity = Gravity.CENTER_HORIZONTAL
+                  val ic = T.iconBubble(c, if (earned) IconView.MEDAL else IconView.LOCK, if (earned) T.AMBER else T.MUTED, 52)
+                  box.addView(ic, LinearLayout.LayoutParams(T.dp(c, 52), T.dp(c, 52)))
+                  val title = T.text(c, Msgs.badgeTitle(id), 12f, if (earned) T.TEXT else T.MUTED, true)
+                  title.gravity = Gravity.CENTER
+                  box.addView(title, T.lpd(c, T.MATCH, T.WRAP, 0, 6, 0, 0))
+                  box.setOnClickListener {
+                      AlertDialog.Builder(a, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                          .setTitle(Msgs.badgeTitle(id))
+                          .setMessage(Msgs.badgeDesc(id) + "\n\n" + (if (earned) "حصلت عليها، وهي لك للأبد." else "لم تحصل عليها بعد. تقدّم خطوة خطوة."))
+                          .setPositiveButton("حسنًا", null)
+                          .show()
+                  }
+                  T.pressable(box)
+                  return box
+              }
+
+              private fun badgesCard(s: GameStore.Snapshot): View {
+                  val card = T.cardBox(c)
+                  card.addView(T.text(c, "الشارات", 16f, T.TEXT, true))
+                  val ids = GameMath.BADGES
+                  var i = 0
+                  while (i < ids.size) {
+                      val row = T.hbox(c)
+                      for (j in 0 until 3) {
+                          if (i + j < ids.size) {
+                              row.addView(badgeTile(ids[i + j], s.earned.contains(ids[i + j])), LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                          } else {
+                              row.addView(T.space(c, 1, 1), LinearLayout.LayoutParams(0, 1, 1f))
+                          }
+                      }
+                      card.addView(row, T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
+                      i += 3
+                  }
+                  return card
+              }
+
+              private fun legend(color: Int, label: String): View {
+                  val r = T.hbox(c)
+                  val dot = View(c)
+                  dot.background = T.oval(color)
+                  r.addView(dot, LinearLayout.LayoutParams(T.dp(c, 10), T.dp(c, 10)))
+                  r.addView(T.space(c, 6, 1))
+                  r.addView(T.text(c, label, 12f, T.SUB))
+                  return r
+              }
+
+              private fun cell(day: Long, st: Int?, perfect: Boolean, isToday: Boolean, future: Boolean): View {
+                  val f = FrameLayout(c)
+                  val size = T.dp(c, 36)
+                  val tv = T.text(c, LocalDate.ofEpochDay(day).dayOfMonth.toString(), 13f, if (future) T.MUTED else T.SUB)
+                  tv.gravity = Gravity.CENTER
+                  var fill = 0x14FFFFFF
+                  var tc = if (future) T.MUTED else T.SUB
+                  var edge = 0
+                  if (st == 1) {
+                      fill = 0xFF1FBF86.toInt()
+                      tc = T.ON_GREEN
+                      if (perfect) edge = T.AMBER
+                  } else if (st == 2) {
+                      fill = 0x33FFB74D
+                      tc = T.AMBER
+                      edge = T.AMBER
+                  }
+                  val g = GradientDrawable()
+                  g.shape = GradientDrawable.OVAL
+                  g.setColor(fill)
+                  if (isToday) g.setStroke(T.dp(c, 2), T.BLUE) else if (edge != 0) g.setStroke(T.dp(c, 2), edge)
+                  tv.background = g
+                  tv.setTextColor(tc)
+                  f.addView(tv, FrameLayout.LayoutParams(size, size, Gravity.CENTER))
+                  if (!future) f.setOnClickListener { editDay(day) }
+                  return f
+              }
+
+              private fun editDay(day: Long) {
+                  val title = LocalDate.ofEpochDay(day).format(DateTimeFormatter.ofPattern("EEEE d MMMM", Locale("ar")))
+                  AlertDialog.Builder(a, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                      .setTitle(title)
+                      .setItems(arrayOf("نجحت", "تعثّرت", "غير مسجل")) { _, which ->
+                          val st = if (which == 0) 1 else if (which == 1) 2 else 0
+                          StreakStore.set(c, day, st)
+                          sig = ""
+                          refresh()
+                          a.afterChange()
+                      }
+                      .show()
+              }
+
+              private fun calendarCard(today: Long, log: Map<Long, Int>, masks: Map<Long, Int>): View {
+                  val card = T.cardBox(c)
+                  val nav = T.hbox(c)
+                  nav.addView(T.roundIcon(c, IconView.BACK) {
+                      ym = ym.minusMonths(1)
+                      sig = ""
+                      refresh()
+                  }, LinearLayout.LayoutParams(T.dp(c, 40), T.dp(c, 40)))
+                  val title = T.text(c, ym.format(DateTimeFormatter.ofPattern("MMMM yyyy", Locale("ar"))), 16f, T.TEXT, true)
+                  title.gravity = Gravity.CENTER
+                  nav.addView(title, LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                  nav.addView(T.roundIcon(c, IconView.CHEVRON) {
+                      ym = ym.plusMonths(1)
+                      sig = ""
+                      refresh()
+                  }, LinearLayout.LayoutParams(T.dp(c, 40), T.dp(c, 40)))
+                  card.addView(nav)
+
+                  val lg = T.hbox(c)
+                  lg.addView(legend(0xFF1FBF86.toInt(), "التزام"))
+                  lg.addView(T.space(c, 14, 1))
+                  lg.addView(legend(T.AMBER, "تعثّر"))
+                  lg.addView(T.space(c, 14, 1))
+                  lg.addView(legend(0x33FFFFFF, "غير مسجل"))
+                  card.addView(lg, T.lpd(c, T.WRAP, T.WRAP, 0, 12, 0, 8))
+
+                  val names = listOf("س", "ح", "ن", "ث", "ر", "خ", "ج")
+                  val head = LinearLayout(c)
+                  head.orientation = LinearLayout.HORIZONTAL
+                  for (n in names) {
+                      val tv = T.text(c, n, 12f, T.MUTED, true)
+                      tv.gravity = Gravity.CENTER
+                      head.addView(tv, LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                  }
+                  card.addView(head, T.lpd(c, T.MATCH, T.WRAP, 0, 4, 0, 4))
+
+                  val offset = (ym.atDay(1).dayOfWeek.value + 1) % 7
+                  val len = ym.lengthOfMonth()
+                  for (row in 0 until 6) {
+                      if (row * 7 - offset + 1 > len) break
+                      val r = LinearLayout(c)
+                      r.orientation = LinearLayout.HORIZONTAL
+                      for (col in 0 until 7) {
+                          val n = row * 7 + col - offset + 1
+                          if (n < 1 || n > len) {
+                              r.addView(T.space(c, 1, 1), LinearLayout.LayoutParams(0, T.dp(c, 42), 1f))
+                          } else {
+                              val day = ym.atDay(n).toEpochDay()
+                              val st: Int? = log[day]
+                              val perfect = st == 1 && GameMath.questsDone(masks[day] ?: 0) == GameMath.QUESTS
+                              r.addView(cell(day, st, perfect, day == today, day > today), LinearLayout.LayoutParams(0, T.dp(c, 42), 1f))
+                          }
+                      }
+                      card.addView(r)
+                  }
+                  card.addView(T.text(c, "اضغط على أي يوم لتعديل تسجيله. الإطار الذهبي = يوم مثالي.", 12f, T.MUTED), T.lpd(c, T.WRAP, T.WRAP, 0, 10, 0, 0))
+                  return card
+              }
+
+              override fun refresh() {
+                  val today = StreakStore.today()
+                  val log = StreakStore.load(c)
+                  val masks = GameStore.questMasks(c)
+                  val jd = GameStore.journalDays(c)
+                  val ms = masks.keys.sorted().joinToString(",") { it.toString() + ":" + masks[it] }
+                  val s = StreakMath.serialize(log) + "#" + ms + "#" + jd.size + "#" + today + "#" + ym
+                  if (s == sig) return
+                  sig = s
+                  body.removeAllViews()
+                  val snap = GameStore.snapshot(c)
+                  body.addView(statsGrid(snap), T.lpd(c, T.MATCH, T.WRAP, 0, 16, 0, 0))
+                  body.addView(weekChart(today, masks, log, jd), T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
+                  body.addView(badgesCard(snap), T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
+                  body.addView(calendarCard(today, log, masks), T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
+              }
+
+              override fun onShown() {
+                  super.onShown()
+                  sig = ""
+              }
+          }
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/guard
+          cat > app/src/main/java/com/example/guard/BarView.kt <<'EOF_FILE'
+          package com.example.guard
+
+          import android.animation.ValueAnimator
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.LinearGradient
+          import android.graphics.Paint
+          import android.graphics.RectF
+          import android.graphics.Shader
+          import android.view.View
+
+          // Rounded progress bar that fills from the right (RTL) with a smooth animation.
+          class BarView(c: Context) : View(c) {
+              var fraction: Float = 0f
+                  set(value) {
+                      field = if (value < 0f) 0f else if (value > 1f) 1f else value
+                      invalidate()
+                  }
+
+              private val track = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val r = RectF()
+
+              init {
+                  track.color = 0x22FFFFFF
+              }
+
+              fun animateTo(f: Float) {
+                  val a = ValueAnimator.ofFloat(fraction, f)
+                  a.duration = 650
+                  a.addUpdateListener { fraction = it.animatedValue as Float }
+                  a.start()
+              }
+
+              override fun onDraw(canvas: Canvas) {
+                  val w = width.toFloat()
+                  val h = height.toFloat()
+                  val rad = h / 2f
+                  r.set(0f, 0f, w, h)
+                  canvas.drawRoundRect(r, rad, rad, track)
+                  val fw = w * fraction
+                  if (fw > 0f) {
+                      fill.shader = LinearGradient(w - fw, 0f, w, 0f, T.GREEN, T.GREEN_D, Shader.TileMode.CLAMP)
+                      r.set(w - fw, 0f, w, h)
+                      canvas.drawRoundRect(r, rad, rad, fill)
+                  }
+              }
+          }
           EOF_FILE
           mkdir -p app/src/main/java/com/example/guard
           cat > app/src/main/java/com/example/guard/BlockVpnService.kt <<'EOF_FILE'
@@ -223,338 +533,478 @@ jobs:
           }
           EOF_FILE
           mkdir -p app/src/main/java/com/example/guard
+          cat > app/src/main/java/com/example/guard/GameMath.java <<'EOF_FILE'
+          package com.example.guard;
+
+          import java.util.ArrayList;
+          import java.util.HashSet;
+          import java.util.List;
+          import java.util.Map;
+          import java.util.Set;
+
+          /**
+           * Pure game rules (no Android dependencies, unit-tested).
+           * XP is derived from the saved history, so it can be recomputed at any time.
+           * Nothing here ever removes a level, region or badge: the app keeps high-water marks on top of it.
+           */
+          public final class GameMath {
+              public static final int QUEST_XP = 20;
+              public static final int SUCCESS_XP = 30;
+              public static final int JOURNAL_XP = 15;
+              public static final int QUESTS = 3;
+
+              private static final int[] REGION_LEVELS = {1, 3, 5, 8, 12, 16};
+              private static final int[] STREAK_MILESTONES = {3, 7, 14, 30};
+              private static final int[] STREAK_BONUS = {25, 75, 150, 300};
+
+              public static final String[] BADGES = {"s1", "s3", "s7", "s14", "s30", "j1", "j7", "p1", "p7", "c3", "t10", "l5", "l10"};
+
+              private GameMath() {}
+
+              /** Total XP needed to reach level n (level 1 = 0, 2 = 100, 3 = 300, 4 = 600, 5 = 1000 ...). */
+              public static int xpForLevel(int n) {
+                  return n <= 1 ? 0 : 50 * n * (n - 1);
+              }
+
+              public static int levelForXp(int xp) {
+                  int n = 1;
+                  while (xpForLevel(n + 1) <= xp) n++;
+                  return n;
+              }
+
+              public static int regionCount() { return REGION_LEVELS.length; }
+
+              public static int regionLevel(int i) { return REGION_LEVELS[i]; }
+
+              public static int regionsUnlocked(int level) {
+                  int n = 0;
+                  for (int l : REGION_LEVELS) if (level >= l) n++;
+                  return n;
+              }
+
+              public static int questsDone(int mask) { return Integer.bitCount(mask & 7); }
+
+              public static int dayXp(int mask, boolean success, boolean journal) {
+                  return questsDone(mask) * QUEST_XP + (success ? SUCCESS_XP : 0) + (journal ? JOURNAL_XP : 0);
+              }
+
+              public static int streakBonus(int best) {
+                  int sum = 0;
+                  for (int i = 0; i < STREAK_MILESTONES.length; i++) {
+                      if (best >= STREAK_MILESTONES[i]) sum += STREAK_BONUS[i];
+                  }
+                  return sum;
+              }
+
+              private static boolean isSuccess(Map<Long, Integer> log, long d) {
+                  Integer s = log.get(Long.valueOf(d));
+                  return s != null && s.intValue() == StreakMath.SUCCESS;
+              }
+
+              private static int maskOf(Map<Long, Integer> masks, long d) {
+                  Integer m = masks.get(Long.valueOf(d));
+                  return m == null ? 0 : m.intValue();
+              }
+
+              public static int dayXpFor(long day, Map<Long, Integer> masks, Map<Long, Integer> log, Set<Long> journal) {
+                  return dayXp(maskOf(masks, day), isSuccess(log, day), journal.contains(Long.valueOf(day)));
+              }
+
+              /** Quests earn XP on any day (even a day with a stumble); a success check-in adds a bonus. */
+              public static int totalXp(Map<Long, Integer> masks, Map<Long, Integer> log, Set<Long> journal, int bestStreak) {
+                  HashSet<Long> days = new HashSet<Long>();
+                  days.addAll(masks.keySet());
+                  days.addAll(log.keySet());
+                  days.addAll(journal);
+                  int xp = 0;
+                  for (Long d : days) xp += dayXpFor(d.longValue(), masks, log, journal);
+                  return xp + streakBonus(bestStreak);
+              }
+
+              /** A perfect day = all three quests done + a success check-in. */
+              public static int perfectDays(Map<Long, Integer> masks, Map<Long, Integer> log) {
+                  int n = 0;
+                  for (Map.Entry<Long, Integer> e : masks.entrySet()) {
+                      long d = e.getKey().longValue();
+                      if (questsDone(e.getValue().intValue()) == QUESTS && isSuccess(log, d)) n++;
+                  }
+                  return n;
+              }
+
+              /** A comeback = a stumble followed by three successful days in a row. */
+              public static boolean comeback(Map<Long, Integer> log) {
+                  for (Map.Entry<Long, Integer> e : log.entrySet()) {
+                      if (e.getValue().intValue() == StreakMath.RELAPSE) {
+                          long d = e.getKey().longValue();
+                          if (isSuccess(log, d + 1) && isSuccess(log, d + 2) && isSuccess(log, d + 3)) return true;
+                      }
+                  }
+                  return false;
+              }
+
+              public static final class Stats {
+                  public int bestStreak;
+                  public int totalSuccess;
+                  public int journalDays;
+                  public int perfectDays;
+                  public int level;
+                  public boolean comeback;
+              }
+
+              public static boolean earned(String id, Stats s) {
+                  if ("s1".equals(id)) return s.bestStreak >= 1;
+                  if ("s3".equals(id)) return s.bestStreak >= 3;
+                  if ("s7".equals(id)) return s.bestStreak >= 7;
+                  if ("s14".equals(id)) return s.bestStreak >= 14;
+                  if ("s30".equals(id)) return s.bestStreak >= 30;
+                  if ("j1".equals(id)) return s.journalDays >= 1;
+                  if ("j7".equals(id)) return s.journalDays >= 7;
+                  if ("p1".equals(id)) return s.perfectDays >= 1;
+                  if ("p7".equals(id)) return s.perfectDays >= 7;
+                  if ("c3".equals(id)) return s.comeback;
+                  if ("t10".equals(id)) return s.totalSuccess >= 10;
+                  if ("l5".equals(id)) return s.level >= 5;
+                  if ("l10".equals(id)) return s.level >= 10;
+                  return false;
+              }
+
+              public static List<String> earnedList(Stats s) {
+                  ArrayList<String> out = new ArrayList<String>();
+                  for (String id : BADGES) if (earned(id, s)) out.add(id);
+                  return out;
+              }
+          }
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/guard
+          cat > app/src/main/java/com/example/guard/GameStore.kt <<'EOF_FILE'
+          package com.example.guard
+
+          import android.content.Context
+
+          // Local persistence for the game layer (SharedPreferences: survives restarts and reboots).
+          // XP is derived from history; levels, XP and badges are kept as high-water marks so a stumble
+          // (or an edited day) never takes away something you already earned.
+          object GameStore {
+              class Snapshot(
+                  val xp: Int, val level: Int, val best: Int, val cur: Int, val totalSuccess: Int,
+                  val journalDays: Int, val perfect: Int, val earned: List<String>
+              )
+
+              class Celebration(val level: Int, val newRegion: Boolean, val badges: List<String>)
+
+              private fun sp(c: Context) = c.getSharedPreferences("game", Context.MODE_PRIVATE)
+
+              // ---- daily quests (bit mask per day) ----
+              fun mask(c: Context, day: Long): Int = sp(c).getInt("qd_$day", 0)
+
+              fun setQuest(c: Context, day: Long, idx: Int, done: Boolean) {
+                  var m = mask(c, day)
+                  m = if (done) (m or (1 shl idx)) else (m and (1 shl idx).inv())
+                  sp(c).edit().putInt("qd_$day", m).commit()
+              }
+
+              fun questMasks(c: Context): MutableMap<Long, Int> {
+                  val m = HashMap<Long, Int>()
+                  for ((k, v) in sp(c).all) {
+                      if (k.startsWith("qd_") && v is Int) {
+                          val d = k.substring(3).toLongOrNull()
+                          if (d != null) m[d] = v
+                      }
+                  }
+                  return m
+              }
+
+              // ---- journal ----
+              fun journal(c: Context, day: Long): Pair<String, String> =
+                  Pair(sp(c).getString("ja_$day", "") ?: "", sp(c).getString("jb_$day", "") ?: "")
+
+              fun saveJournal(c: Context, day: Long, a: String, b: String) {
+                  val e = sp(c).edit()
+                  if (a.isBlank() && b.isBlank()) {
+                      e.remove("ja_$day")
+                      e.remove("jb_$day")
+                  } else {
+                      e.putString("ja_$day", a.trim())
+                      e.putString("jb_$day", b.trim())
+                  }
+                  e.commit()
+              }
+
+              fun journalDays(c: Context): Set<Long> {
+                  val out = HashSet<Long>()
+                  for ((k, v) in sp(c).all) {
+                      if ((k.startsWith("ja_") || k.startsWith("jb_")) && v is String && v.isNotBlank()) {
+                          val d = k.substring(3).toLongOrNull()
+                          if (d != null) out.add(d)
+                      }
+                  }
+                  return out
+              }
+
+              // ---- progress ----
+              fun snapshot(c: Context): Snapshot {
+                  val today = StreakStore.today()
+                  val log = StreakStore.load(c)
+                  val masks = questMasks(c)
+                  val jd = journalDays(c)
+                  val best = StreakStore.bestEver(c, log, today)
+                  val cur = StreakMath.current(log, today)
+                  val derived = GameMath.totalXp(masks, log, jd, best)
+                  val s = sp(c)
+                  val stored = s.getInt("xp_ever", 0)
+                  val xp = if (derived > stored) derived else stored
+                  if (xp != stored) s.edit().putInt("xp_ever", xp).apply()
+                  val level = GameMath.levelForXp(xp)
+                  val total = StreakMath.count(log, StreakMath.SUCCESS)
+                  val perfect = GameMath.perfectDays(masks, log)
+
+                  val st = GameMath.Stats()
+                  st.bestStreak = best
+                  st.totalSuccess = total
+                  st.journalDays = jd.size
+                  st.perfectDays = perfect
+                  st.level = level
+                  st.comeback = GameMath.comeback(log)
+
+                  val all = HashSet<String>()
+                  val raw = s.getString("badges", "") ?: ""
+                  for (p in raw.split(",")) if (p.isNotEmpty()) all.add(p)
+                  all.addAll(GameMath.earnedList(st))
+                  val joined = all.sorted().joinToString(",")
+                  if (joined != raw) s.edit().putString("badges", joined).apply()
+                  val ordered = GameMath.BADGES.filter { all.contains(it) }
+                  return Snapshot(xp, level, best, cur, total, jd.size, perfect, ordered)
+              }
+
+              // Returns what is new since the last time the user was told (level up / new region / new badges).
+              // The very first call only records the current state silently.
+              fun takeCelebrations(c: Context, snap: Snapshot): Celebration {
+                  val s = sp(c)
+                  if (!s.contains("level_seen")) {
+                      s.edit().putInt("level_seen", snap.level).putString("badges_seen", snap.earned.joinToString(",")).commit()
+                      return Celebration(0, false, emptyList())
+                  }
+                  val seenLevel = s.getInt("level_seen", 1)
+                  val seenBadges = HashSet<String>()
+                  for (p in (s.getString("badges_seen", "") ?: "").split(",")) if (p.isNotEmpty()) seenBadges.add(p)
+                  val fresh = snap.earned.filter { !seenBadges.contains(it) }
+                  val up = if (snap.level > seenLevel) snap.level else 0
+                  val newRegion = up > 0 && GameMath.regionsUnlocked(up) > GameMath.regionsUnlocked(seenLevel)
+                  if (up > 0 || fresh.isNotEmpty()) {
+                      seenBadges.addAll(fresh)
+                      s.edit()
+                          .putInt("level_seen", if (snap.level > seenLevel) snap.level else seenLevel)
+                          .putString("badges_seen", seenBadges.sorted().joinToString(","))
+                          .commit()
+                  }
+                  return Celebration(up, newRegion, fresh)
+              }
+          }
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/guard
           cat > app/src/main/java/com/example/guard/HomePage.kt <<'EOF_FILE'
           package com.example.guard
 
-          import android.animation.ObjectAnimator
-          import android.animation.PropertyValuesHolder
-          import android.animation.ValueAnimator
           import android.content.Context
+          import android.graphics.Outline
           import android.view.Gravity
           import android.view.View
-          import android.view.animation.DecelerateInterpolator
+          import android.view.ViewOutlineProvider
           import android.widget.FrameLayout
+          import android.widget.HorizontalScrollView
           import android.widget.LinearLayout
-          import android.widget.ScrollView
           import android.widget.TextView
 
-          class HomePage(private val a: MainActivity) : Page {
-              private class Stat(val view: View, val num: TextView)
+          // "عالمي": the user's world, level/XP, streak stats, unlocked regions and today's quest progress.
+          class HomePage(a: MainActivity) : ScrollPage(a) {
+              private class Tile(val view: View, val num: TextView)
 
-              private val c: Context = a
-              private lateinit var content: LinearLayout
-              private lateinit var statusTitle: TextView
-              private lateinit var statusSub: TextView
-              private lateinit var vpnDot: View
-              private lateinit var vpnText: TextView
-              private lateinit var toggle: TextView
-              private lateinit var glow: FrameLayout
+              private lateinit var world: WorldView
+              private lateinit var levelChip: TextView
+              private lateinit var regionCap: TextView
+              private lateinit var lvlTitle: TextView
+              private lateinit var xpText: TextView
+              private lateinit var xpBar: BarView
               private lateinit var curTv: TextView
               private lateinit var bestTv: TextView
-              private lateinit var shieldIdle: LinearLayout
-              private lateinit var shieldActive: LinearLayout
-              private lateinit var ring: RingView
-              private lateinit var ringTime: TextView
-              private lateinit var shieldMsg: TextView
-              private lateinit var logSub: TextView
-              private var pulse: ObjectAnimator? = null
+              private lateinit var badgeTv: TextView
+              private lateinit var regions: LinearLayout
+              private lateinit var questText: TextView
+              private lateinit var questBar: BarView
               private var lastCur = 0
               private var lastBest = 0
-              private var toggleKey = -1
-              private var wasShield = false
+              private var lastFrac = -1f
+              private var lastQuests = -1
+              private var regLevel = -1
 
-              override val root: View = build()
-
-              private fun build(): View {
-                  val scroll = ScrollView(c)
-                  scroll.background = T.screenBg()
-                  scroll.isFillViewport = true
-                  scroll.isVerticalScrollBarEnabled = false
-
-                  content = LinearLayout(c)
-                  content.orientation = LinearLayout.VERTICAL
-                  content.layoutDirection = View.LAYOUT_DIRECTION_RTL
-                  content.setPadding(T.dp(c, 20), T.dp(c, 44), T.dp(c, 20), T.dp(c, 28))
-                  scroll.addView(content, FrameLayout.LayoutParams(T.MATCH, T.WRAP))
-
-                  content.addView(topBar(), T.lpd(c, T.MATCH, T.WRAP))
-                  content.addView(hero(), T.lpd(c, T.MATCH, T.WRAP, 0, 22, 0, 0))
-                  content.addView(statsRow(), T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
-                  content.addView(shieldArea(), T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
-                  content.addView(logCard(), T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
-                  val foot = T.text(c, "كل يوم ثبات هو انتصار", 13f, T.MUTED)
-                  foot.gravity = Gravity.CENTER
-                  content.addView(foot, T.lpd(c, T.MATCH, T.WRAP, 0, 22, 0, 0))
-                  return scroll
+              init {
+                  build()
               }
 
-              private fun topBar(): View {
-                  val row = LinearLayout(c)
-                  row.orientation = LinearLayout.HORIZONTAL
-                  row.gravity = Gravity.CENTER_VERTICAL
-                  val titles = LinearLayout(c)
-                  titles.orientation = LinearLayout.VERTICAL
+              private fun build() {
+                  val bar = T.hbox(c)
+                  val titles = T.vbox(c)
                   titles.addView(T.text(c, "ثبات", 30f, T.TEXT, true))
-                  titles.addView(T.text(c, "درعك في لحظات الضعف", 13f, T.SUB))
-                  row.addView(titles, LinearLayout.LayoutParams(0, T.WRAP, 1f))
-                  row.addView(T.roundIcon(c, IconView.SLIDERS) { a.goSettings() }, LinearLayout.LayoutParams(T.dp(c, 44), T.dp(c, 44)))
-                  return row
+                  titles.addView(T.text(c, "ابنِ نسختك الأقوى", 13f, T.SUB))
+                  bar.addView(titles, LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                  bar.addView(T.roundIcon(c, IconView.SLIDERS) { a.goSettings() }, LinearLayout.LayoutParams(T.dp(c, 44), T.dp(c, 44)))
+                  content.addView(bar, T.lpd(c, T.MATCH, T.WRAP))
+
+                  content.addView(worldCard(), T.lpd(c, T.MATCH, T.dp(c, 240), 0, 18, 0, 0))
+                  add(xpCard())
+                  add(statsRow())
+                  add(regionsCard())
+                  add(todayCard())
               }
 
-              private fun hero(): View {
-                  val card = LinearLayout(c)
-                  card.orientation = LinearLayout.VERTICAL
-                  card.gravity = Gravity.CENTER_HORIZONTAL
-                  card.background = T.card(c, 28)
-                  card.setPadding(T.dp(c, 20), T.dp(c, 22), T.dp(c, 20), T.dp(c, 22))
-
-                  glow = FrameLayout(c)
-                  val halo = View(c)
-                  halo.background = T.halo(c, 0x552EE59D, 150)
-                  glow.addView(halo, FrameLayout.LayoutParams(T.dp(c, 150), T.dp(c, 150), Gravity.CENTER))
-                  val shield = IconView(c, IconView.SHIELD, T.GREEN)
-                  shield.setIconFill(0x332EE59D)
-                  glow.addView(shield, FrameLayout.LayoutParams(T.dp(c, 78), T.dp(c, 78), Gravity.CENTER))
-                  card.addView(glow, LinearLayout.LayoutParams(T.dp(c, 150), T.dp(c, 150)))
-
-                  statusTitle = T.text(c, "", 22f, T.TEXT, true)
-                  card.addView(statusTitle, T.lpd(c, T.WRAP, T.WRAP, 0, 4, 0, 0))
-                  statusSub = T.text(c, "", 13f, T.SUB)
-                  card.addView(statusSub, T.lpd(c, T.WRAP, T.WRAP, 0, 4, 0, 0))
-
-                  val chip = LinearLayout(c)
-                  chip.orientation = LinearLayout.HORIZONTAL
-                  chip.gravity = Gravity.CENTER_VERTICAL
-                  chip.background = T.card(c, 16, 0x14FFFFFF, 0x1FFFFFFF)
-                  chip.setPadding(T.dp(c, 12), T.dp(c, 6), T.dp(c, 12), T.dp(c, 6))
-                  vpnDot = View(c)
-                  chip.addView(vpnDot, LinearLayout.LayoutParams(T.dp(c, 8), T.dp(c, 8)))
-                  chip.addView(T.space(c, 8, 1))
-                  vpnText = T.text(c, "", 12.5f, T.SUB)
-                  chip.addView(vpnText)
-                  card.addView(chip, T.lpd(c, T.WRAP, T.WRAP, 0, 12, 0, 0))
-
-                  toggle = T.button(c, "", T.grad(c, T.GREEN_D, T.GREEN, 20), T.ON_GREEN)
-                  toggle.setOnClickListener { a.toggleProtection() }
-                  card.addView(toggle, T.lpd(c, T.MATCH, T.WRAP, 0, 18, 0, 0))
-                  return card
+              private fun worldCard(): View {
+                  val f = FrameLayout(c)
+                  world = WorldView(c)
+                  f.addView(world, FrameLayout.LayoutParams(T.MATCH, T.MATCH))
+                  val radius = T.dp(c, 26).toFloat()
+                  f.outlineProvider = object : ViewOutlineProvider() {
+                      override fun getOutline(view: View, outline: Outline) {
+                          outline.setRoundRect(0, 0, view.width, view.height, radius)
+                      }
+                  }
+                  f.clipToOutline = true
+                  levelChip = T.pill(c, "المستوى 1", T.GREEN)
+                  val lp1 = FrameLayout.LayoutParams(T.WRAP, T.WRAP, Gravity.TOP or Gravity.START)
+                  lp1.setMargins(T.dp(c, 12), T.dp(c, 12), T.dp(c, 12), 0)
+                  f.addView(levelChip, lp1)
+                  regionCap = T.pill(c, "", T.TEXT)
+                  val lp2 = FrameLayout.LayoutParams(T.WRAP, T.WRAP, Gravity.BOTTOM or Gravity.START)
+                  lp2.setMargins(T.dp(c, 12), 0, T.dp(c, 12), T.dp(c, 12))
+                  f.addView(regionCap, lp2)
+                  return f
               }
 
-              private fun stat(kind: Int, tint: Int, label: String, unit: String): Stat {
-                  val box = LinearLayout(c)
-                  box.orientation = LinearLayout.VERTICAL
+              private fun xpCard(): View {
+                  val box = T.cardBox(c)
+                  val row = T.hbox(c)
+                  lvlTitle = T.text(c, "", 18f, T.TEXT, true)
+                  row.addView(lvlTitle, LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                  xpText = T.text(c, "", 13f, T.SUB)
+                  row.addView(xpText)
+                  box.addView(row)
+                  xpBar = BarView(c)
+                  box.addView(xpBar, T.lpd(c, T.MATCH, T.dp(c, 12), 0, 12, 0, 0))
+                  return box
+              }
+
+              private fun tile(kind: Int, tint: Int, label: String): Tile {
+                  val box = T.cardBox(c, 20, 14)
                   box.gravity = Gravity.CENTER_HORIZONTAL
-                  box.background = T.card(c, 22)
-                  box.setPadding(T.dp(c, 14), T.dp(c, 18), T.dp(c, 14), T.dp(c, 16))
-                  box.addView(IconView(c, kind, tint), LinearLayout.LayoutParams(T.dp(c, 26), T.dp(c, 26)))
-                  val num = T.text(c, "0", 34f, T.TEXT, true)
-                  box.addView(num, T.lpd(c, T.WRAP, T.WRAP, 0, 8, 0, 0))
-                  box.addView(T.text(c, unit, 12f, T.SUB))
-                  box.addView(T.text(c, label, 13f, tint, true), T.lpd(c, T.WRAP, T.WRAP, 0, 6, 0, 0))
-                  return Stat(box, num)
+                  box.addView(IconView(c, kind, tint), LinearLayout.LayoutParams(T.dp(c, 24), T.dp(c, 24)))
+                  val num = T.text(c, "0", 26f, T.TEXT, true)
+                  box.addView(num, T.lpd(c, T.WRAP, T.WRAP, 0, 6, 0, 0))
+                  box.addView(T.text(c, label, 12f, tint, true))
+                  return Tile(box, num)
               }
 
               private fun statsRow(): View {
                   val row = LinearLayout(c)
                   row.orientation = LinearLayout.HORIZONTAL
-                  val cur = stat(IconView.FLAME, T.AMBER, "الأيام الحالية", "يوم")
-                  val best = stat(IconView.STAR, T.BLUE, "أفضل سلسلة", "يوم")
+                  val cur = tile(IconView.FLAME, T.AMBER, "السلسلة")
+                  val best = tile(IconView.STAR, T.BLUE, "أفضل سلسلة")
+                  val badges = tile(IconView.MEDAL, T.GREEN, "الشارات")
                   curTv = cur.num
                   bestTv = best.num
+                  badgeTv = badges.num
                   row.addView(cur.view, LinearLayout.LayoutParams(0, T.WRAP, 1f))
-                  row.addView(T.space(c, 12, 1))
+                  row.addView(T.space(c, 10, 1))
                   row.addView(best.view, LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                  row.addView(T.space(c, 10, 1))
+                  row.addView(badges.view, LinearLayout.LayoutParams(0, T.WRAP, 1f))
                   return row
               }
 
-              private fun shieldArea(): View {
-                  val box = LinearLayout(c)
-                  box.orientation = LinearLayout.VERTICAL
-
-                  shieldIdle = LinearLayout(c)
-                  shieldIdle.orientation = LinearLayout.HORIZONTAL
-                  shieldIdle.gravity = Gravity.CENTER_VERTICAL
-                  shieldIdle.background = T.grad(c, T.BLUE_D, T.GREEN_D, 24)
-                  shieldIdle.setPadding(T.dp(c, 18), T.dp(c, 18), T.dp(c, 18), T.dp(c, 18))
-                  shieldIdle.addView(IconView(c, IconView.TIMER, 0xFFFFFFFF.toInt()), LinearLayout.LayoutParams(T.dp(c, 30), T.dp(c, 30)))
-                  shieldIdle.addView(T.space(c, 14, 1))
-                  val texts = LinearLayout(c)
-                  texts.orientation = LinearLayout.VERTICAL
-                  texts.addView(T.text(c, "درع الـ10 دقائق", 17f, 0xFFFFFFFF.toInt(), true))
-                  texts.addView(T.text(c, "تحصين فوري للحظات الصعبة: لا يمكن إيقاف الحماية خلال 10 دقائق", 12.5f, 0xCCFFFFFF.toInt()))
-                  shieldIdle.addView(texts, LinearLayout.LayoutParams(0, T.WRAP, 1f))
-                  shieldIdle.addView(IconView(c, IconView.CHEVRON, 0xFFFFFFFF.toInt()), LinearLayout.LayoutParams(T.dp(c, 22), T.dp(c, 22)))
-                  shieldIdle.setOnClickListener {
-                      a.confirm(
-                          "تفعيل درع الـ10 دقائق؟",
-                          "ستبقى الحماية مفعّلة ولا يمكن إيقافها من التطبيق لمدة 10 دقائق. استخدمه عند اللحظات الصعبة.",
-                          "فعّل الدرع"
-                      ) { a.startShield() }
-                  }
-                  T.pressable(shieldIdle)
-                  box.addView(shieldIdle, T.lpd(c, T.MATCH, T.WRAP))
-
-                  shieldActive = LinearLayout(c)
-                  shieldActive.orientation = LinearLayout.VERTICAL
-                  shieldActive.gravity = Gravity.CENTER_HORIZONTAL
-                  shieldActive.background = T.card(c, 24, 0x1A4FB3F6, 0x554FB3F6)
-                  shieldActive.setPadding(T.dp(c, 18), T.dp(c, 18), T.dp(c, 18), T.dp(c, 18))
-                  shieldActive.visibility = View.GONE
-                  shieldActive.addView(T.text(c, "الدرع نشط", 17f, T.TEXT, true))
-                  val ringBox = FrameLayout(c)
-                  ring = RingView(c)
-                  ringBox.addView(ring, FrameLayout.LayoutParams(T.dp(c, 132), T.dp(c, 132), Gravity.CENTER))
-                  ringTime = T.text(c, "10:00", 28f, T.TEXT, true)
-                  ringBox.addView(ringTime, FrameLayout.LayoutParams(T.WRAP, T.WRAP, Gravity.CENTER))
-                  shieldActive.addView(ringBox, T.lpd(c, T.MATCH, T.dp(c, 140), 0, 8, 0, 0))
-                  shieldMsg = T.text(c, "", 14f, T.SUB)
-                  shieldMsg.gravity = Gravity.CENTER
-                  shieldActive.addView(shieldMsg, T.lpd(c, T.MATCH, T.WRAP, 0, 6, 0, 0))
-                  box.addView(shieldActive, T.lpd(c, T.MATCH, T.WRAP))
+              private fun regionsCard(): View {
+                  val box = T.cardBox(c)
+                  box.addView(T.text(c, "مناطق عالمك", 16f, T.TEXT, true))
+                  val hs = HorizontalScrollView(c)
+                  hs.isHorizontalScrollBarEnabled = false
+                  regions = LinearLayout(c)
+                  regions.orientation = LinearLayout.HORIZONTAL
+                  hs.addView(regions)
+                  box.addView(hs, T.lpd(c, T.MATCH, T.WRAP, 0, 12, 0, 0))
                   return box
               }
 
-              private fun logCard(): View {
-                  val row = LinearLayout(c)
-                  row.orientation = LinearLayout.HORIZONTAL
-                  row.gravity = Gravity.CENTER_VERTICAL
-                  row.background = T.card(c, 24)
-                  row.setPadding(T.dp(c, 18), T.dp(c, 18), T.dp(c, 18), T.dp(c, 18))
-                  row.addView(IconView(c, IconView.CALENDAR, T.GREEN), LinearLayout.LayoutParams(T.dp(c, 28), T.dp(c, 28)))
-                  row.addView(T.space(c, 14, 1))
-                  val texts = LinearLayout(c)
-                  texts.orientation = LinearLayout.VERTICAL
-                  texts.addView(T.text(c, "سجل انتصاراتي", 17f, T.TEXT, true))
-                  logSub = T.text(c, "", 12.5f, T.SUB)
-                  texts.addView(logSub)
-                  row.addView(texts, LinearLayout.LayoutParams(0, T.WRAP, 1f))
-                  row.addView(IconView(c, IconView.CHEVRON, T.SUB), LinearLayout.LayoutParams(T.dp(c, 22), T.dp(c, 22)))
-                  row.setOnClickListener { a.goLog() }
-                  T.pressable(row)
-                  return row
+              private fun todayCard(): View {
+                  val box = T.cardBox(c)
+                  val row = T.hbox(c)
+                  row.addView(T.text(c, "مهمات اليوم", 16f, T.TEXT, true), LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                  questText = T.text(c, "", 13f, T.SUB)
+                  row.addView(questText)
+                  box.addView(row)
+                  questBar = BarView(c)
+                  box.addView(questBar, T.lpd(c, T.MATCH, T.dp(c, 12), 0, 12, 0, 0))
+                  val btn = T.button(c, "افتح مهمات اليوم", T.grad(c, T.GREEN_D, T.GREEN, 18), T.ON_GREEN)
+                  btn.setOnClickListener { a.goTab(1) }
+                  box.addView(btn, T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
+                  return box
+              }
+
+              private fun buildRegions(lvl: Int) {
+                  regions.removeAllViews()
+                  for (i in 0 until GameMath.regionCount()) {
+                      val unlocked = lvl >= GameMath.regionLevel(i)
+                      val chip = T.hbox(c)
+                      chip.background = T.card(c, 18, if (unlocked) 0x1F2EE59D else 0x0FFFFFFF, if (unlocked) 0x552EE59D else 0x1FFFFFFF)
+                      chip.setPadding(T.dp(c, 12), T.dp(c, 10), T.dp(c, 14), T.dp(c, 10))
+                      chip.addView(IconView(c, if (unlocked) IconView.CHECK else IconView.LOCK, if (unlocked) T.GREEN else T.MUTED),
+                          LinearLayout.LayoutParams(T.dp(c, 18), T.dp(c, 18)))
+                      chip.addView(T.space(c, 8, 1))
+                      val tx = T.vbox(c)
+                      tx.addView(T.text(c, Msgs.regionName(i), 13.5f, if (unlocked) T.TEXT else T.MUTED, true))
+                      if (!unlocked) tx.addView(T.text(c, "يُفتح عند المستوى " + GameMath.regionLevel(i), 11f, T.MUTED))
+                      chip.addView(tx)
+                      regions.addView(chip, T.lpd(c, T.WRAP, T.WRAP, 0, 0, 10, 0))
+                  }
               }
 
               override fun refresh() {
-                  val running = BlockVpnService.running
-                  val armed = Prefs.armed(c)
-                  val paused = Prefs.paused(c)
-                  val left = Prefs.shieldLeft(c)
-                  val locked = left > 0L && running
-
-                  val dot: Int
-                  when {
-                      running -> {
-                          statusTitle.text = "الحماية تعمل"
-                          statusTitle.setTextColor(T.GREEN)
-                          statusSub.text = "YouTube بدون إنترنت الآن"
-                          vpnText.text = "VPN: شغّال"
-                          dot = T.GREEN
-                      }
-                      armed && paused -> {
-                          statusTitle.text = "الحماية متوقفة مؤقتًا"
-                          statusTitle.setTextColor(T.AMBER)
-                          statusSub.text = "تعود تلقائيًا عند فتح القفل القادم"
-                          vpnText.text = "VPN: متوقف مؤقتًا"
-                          dot = T.AMBER
-                      }
-                      armed -> {
-                          statusTitle.text = "جارٍ التشغيل"
-                          statusTitle.setTextColor(T.AMBER)
-                          statusSub.text = "تبدأ الحماية تلقائيًا خلال لحظات"
-                          vpnText.text = "VPN: بانتظار التشغيل"
-                          dot = T.AMBER
-                      }
-                      else -> {
-                          statusTitle.text = "الحماية غير مفعّلة"
-                          statusTitle.setTextColor(T.SUB)
-                          statusSub.text = "اضغط تشغيل للإعداد الأول"
-                          vpnText.text = "VPN: غير مفعّل"
-                          dot = T.MUTED
-                      }
+                  val s = GameStore.snapshot(c)
+                  val lvl = s.level
+                  world.level = lvl
+                  levelChip.text = "المستوى " + lvl
+                  regionCap.text = Msgs.regionName(GameMath.regionsUnlocked(lvl) - 1)
+                  lvlTitle.text = "المستوى " + lvl + " · " + Msgs.levelTitle(lvl)
+                  val base = GameMath.xpForLevel(lvl)
+                  val span = GameMath.xpForLevel(lvl + 1) - base
+                  val gained = s.xp - base
+                  xpText.text = gained.toString() + " / " + span + " XP"
+                  val frac = gained.toFloat() / span.toFloat()
+                  if (frac != lastFrac) {
+                      xpBar.animateTo(frac)
+                      lastFrac = frac
                   }
-                  vpnDot.background = T.oval(dot)
-
-                  val key = if (running) (if (locked) 1 else 0) else 2
-                  if (key != toggleKey) {
-                      toggleKey = key
-                      if (running) {
-                          toggle.background = T.outline(c, T.AMBER, 20)
-                          toggle.setTextColor(T.AMBER)
-                      } else {
-                          toggle.background = T.grad(c, T.GREEN_D, T.GREEN, 20)
-                          toggle.setTextColor(T.ON_GREEN)
-                      }
-                      toggle.setPadding(T.dp(c, 16), T.dp(c, 16), T.dp(c, 16), T.dp(c, 16))
+                  if (s.cur != lastCur) {
+                      T.countTo(curTv, lastCur, s.cur)
+                      lastCur = s.cur
                   }
-                  toggle.text = if (running) (if (locked) "مقفل بالدرع" else "إيقاف مؤقت") else (if (armed) "تشغيل الآن" else "تشغيل الحماية")
-                  toggle.alpha = if (locked) 0.5f else 1f
-
-                  shieldIdle.visibility = if (left > 0L) View.GONE else View.VISIBLE
-                  shieldActive.visibility = if (left > 0L) View.VISIBLE else View.GONE
-                  if (left > 0L) {
-                      ring.progress = left / 600000f
-                      val s = (left / 1000L).toInt()
-                      ringTime.text = "%02d:%02d".format(s / 60, s % 60)
-                      shieldMsg.text = Msgs.shield(left / 60000L)
+                  if (s.best != lastBest) {
+                      T.countTo(bestTv, lastBest, s.best)
+                      lastBest = s.best
                   }
-                  if (wasShield && left == 0L) a.toast("انتهى الدرع. أحسنت، أنت أقوى من اللحظة.")
-                  wasShield = left > 0L
-
-                  val today = StreakStore.today()
-                  val m = StreakStore.load(c)
-                  val cur = StreakMath.current(m, today)
-                  val best = StreakStore.bestEver(c, m, today)
-                  if (cur != lastCur) {
-                      T.countTo(curTv, lastCur, cur)
-                      lastCur = cur
+                  badgeTv.text = s.earned.size.toString() + "/" + GameMath.BADGES.size
+                  if (lvl != regLevel) {
+                      regLevel = lvl
+                      buildRegions(lvl)
                   }
-                  if (best != lastBest) {
-                      T.countTo(bestTv, lastBest, best)
-                      lastBest = best
-                  }
-                  logSub.text = when (m[today]) {
-                      1 -> "اليوم: نجاح"
-                      2 -> "اليوم: انتكاسة، ابدأ من جديد بهدوء"
-                      else -> "اليوم: غير مسجل"
-                  }
-                  updatePulse(running)
-              }
-
-              private fun updatePulse(running: Boolean) {
-                  if (running) {
-                      if (pulse == null) {
-                          val p = ObjectAnimator.ofPropertyValuesHolder(
-                              glow,
-                              PropertyValuesHolder.ofFloat("scaleX", 1f, 1.07f),
-                              PropertyValuesHolder.ofFloat("scaleY", 1f, 1.07f)
-                          )
-                          p.duration = 1700
-                          p.repeatCount = ValueAnimator.INFINITE
-                          p.repeatMode = ValueAnimator.REVERSE
-                          p.start()
-                          pulse = p
-                      }
-                  } else {
-                      pulse?.cancel()
-                      pulse = null
-                      glow.scaleX = 1f
-                      glow.scaleY = 1f
+                  val done = GameMath.questsDone(GameStore.mask(c, StreakStore.today()))
+                  if (done != lastQuests) {
+                      lastQuests = done
+                      questText.text = done.toString() + " من " + GameMath.QUESTS
+                      questBar.animateTo(done.toFloat() / GameMath.QUESTS.toFloat())
                   }
               }
 
               override fun onShown() {
-                  for (i in 0 until content.childCount) {
-                      val v = content.getChildAt(i)
-                      v.alpha = 0f
-                      v.translationY = T.dp(c, 18).toFloat()
-                      v.animate().alpha(1f).translationY(0f).setStartDelay(60L * i).setDuration(320)
-                          .setInterpolator(DecelerateInterpolator()).start()
-                  }
-              }
-
-              override fun onHidden() {
-                  pulse?.cancel()
-                  pulse = null
+                  super.onShown()
+                  lastFrac = -1f
+                  lastQuests = -1
               }
           }
           EOF_FILE
@@ -581,6 +1031,12 @@ jobs:
                   const val CHEVRON = 6
                   const val CALENDAR = 7
                   const val TIMER = 8
+                  const val WORLD = 9
+                  const val QUESTS = 10
+                  const val BOOK = 11
+                  const val TROPHY = 12
+                  const val MEDAL = 13
+                  const val LOCK = 14
               }
 
               private var fillC = 0
@@ -706,287 +1162,202 @@ jobs:
                           canvas.drawLine(12f, 13.5f, 12f, 9.5f, stroke)
                           canvas.drawLine(9.5f, 2.8f, 14.5f, 2.8f, stroke)
                       }
+                      WORLD -> {
+                          canvas.drawCircle(12f, 12f, 9f, stroke)
+                          canvas.drawOval(RectF(8f, 3f, 16f, 21f), stroke)
+                          canvas.drawLine(3f, 12f, 21f, 12f, stroke)
+                      }
+                      QUESTS -> {
+                          canvas.drawRoundRect(RectF(4f, 4f, 20f, 20f), 3.5f, 3.5f, stroke)
+                          val p = Path()
+                          p.moveTo(8f, 12.3f)
+                          p.lineTo(10.8f, 15f)
+                          p.lineTo(16f, 9.2f)
+                          canvas.drawPath(p, stroke)
+                      }
+                      BOOK -> {
+                          canvas.drawRoundRect(RectF(3.5f, 5f, 12f, 19f), 1.8f, 1.8f, stroke)
+                          canvas.drawRoundRect(RectF(12f, 5f, 20.5f, 19f), 1.8f, 1.8f, stroke)
+                          canvas.drawLine(6f, 9f, 9.5f, 9f, stroke)
+                          canvas.drawLine(14.5f, 9f, 18f, 9f, stroke)
+                      }
+                      TROPHY -> {
+                          val p = Path()
+                          p.moveTo(7f, 4f)
+                          p.lineTo(17f, 4f)
+                          p.lineTo(16f, 10f)
+                          p.cubicTo(15.5f, 12.5f, 13.5f, 14f, 12f, 14f)
+                          p.cubicTo(10.5f, 14f, 8.5f, 12.5f, 8f, 10f)
+                          p.close()
+                          canvas.drawPath(p, stroke)
+                          val l = Path()
+                          l.moveTo(7f, 6f)
+                          l.cubicTo(4f, 6f, 4f, 10f, 8f, 10.5f)
+                          canvas.drawPath(l, stroke)
+                          val r = Path()
+                          r.moveTo(17f, 6f)
+                          r.cubicTo(20f, 6f, 20f, 10f, 16f, 10.5f)
+                          canvas.drawPath(r, stroke)
+                          canvas.drawLine(12f, 14f, 12f, 18f, stroke)
+                          canvas.drawLine(8f, 20f, 16f, 20f, stroke)
+                      }
+                      MEDAL -> {
+                          canvas.drawCircle(12f, 9.5f, 5.5f, stroke)
+                          val p = Path()
+                          p.moveTo(8.5f, 14f)
+                          p.lineTo(7f, 21f)
+                          p.lineTo(12f, 18.5f)
+                          p.lineTo(17f, 21f)
+                          p.lineTo(15.5f, 14f)
+                          canvas.drawPath(p, stroke)
+                      }
+                      LOCK -> {
+                          canvas.drawRoundRect(RectF(6f, 11f, 18f, 21f), 2.5f, 2.5f, stroke)
+                          val p = Path()
+                          p.moveTo(8.5f, 11f)
+                          p.lineTo(8.5f, 8f)
+                          p.cubicTo(8.5f, 4.5f, 15.5f, 4.5f, 15.5f, 8f)
+                          p.lineTo(15.5f, 11f)
+                          canvas.drawPath(p, stroke)
+                      }
                   }
                   canvas.restore()
               }
           }
           EOF_FILE
           mkdir -p app/src/main/java/com/example/guard
-          cat > app/src/main/java/com/example/guard/LogPage.kt <<'EOF_FILE'
+          cat > app/src/main/java/com/example/guard/JournalPage.kt <<'EOF_FILE'
           package com.example.guard
 
           import android.app.AlertDialog
           import android.content.Context
-          import android.graphics.drawable.GradientDrawable
+          import android.text.InputType
+          import android.text.TextUtils
           import android.view.Gravity
-          import android.view.View
-          import android.view.animation.DecelerateInterpolator
-          import android.widget.FrameLayout
+          import android.view.inputmethod.InputMethodManager
+          import android.widget.EditText
           import android.widget.LinearLayout
-          import android.widget.ScrollView
           import android.widget.TextView
           import java.time.LocalDate
           import java.time.format.DateTimeFormatter
           import java.util.Locale
 
-          class LogPage(private val a: MainActivity) : Page {
-              private class Mini(val view: View, val num: TextView)
-
-              private val c: Context = a
-              private lateinit var content: LinearLayout
-              private lateinit var curTv: TextView
-              private lateinit var bestTv: TextView
-              private lateinit var totalTv: TextView
+          // "مذكراتي": what helped today and what to improve (+XP once per day). Past entries stay forever.
+          class JournalPage(a: MainActivity) : ScrollPage(a) {
               private lateinit var dateTv: TextView
-              private lateinit var okBtn: TextView
-              private lateinit var slipBtn: TextView
-              private lateinit var clearBtn: TextView
-              private lateinit var msgTv: TextView
-              private lateinit var grid: LinearLayout
+              private lateinit var etA: EditText
+              private lateinit var etB: EditText
+              private lateinit var statusTv: TextView
+              private lateinit var list: LinearLayout
               private var sig = ""
 
-              override val root: View = build()
-
-              private fun build(): View {
-                  val scroll = ScrollView(c)
-                  scroll.background = T.screenBg()
-                  scroll.isFillViewport = true
-                  scroll.isVerticalScrollBarEnabled = false
-
-                  content = LinearLayout(c)
-                  content.orientation = LinearLayout.VERTICAL
-                  content.layoutDirection = View.LAYOUT_DIRECTION_RTL
-                  content.setPadding(T.dp(c, 20), T.dp(c, 44), T.dp(c, 20), T.dp(c, 28))
-                  scroll.addView(content, FrameLayout.LayoutParams(T.MATCH, T.WRAP))
-
-                  val head = LinearLayout(c)
-                  head.orientation = LinearLayout.HORIZONTAL
-                  head.gravity = Gravity.CENTER_VERTICAL
-                  head.addView(T.roundIcon(c, IconView.BACK) { a.goHome() }, LinearLayout.LayoutParams(T.dp(c, 44), T.dp(c, 44)))
-                  head.addView(T.space(c, 14, 1))
-                  head.addView(T.text(c, "سجل انتصاراتي", 22f, T.TEXT, true))
-                  content.addView(head, T.lpd(c, T.MATCH, T.WRAP))
-
-                  val row = LinearLayout(c)
-                  row.orientation = LinearLayout.HORIZONTAL
-                  val cur = mini("الحالية", T.AMBER)
-                  val best = mini("الأفضل", T.BLUE)
-                  val total = mini("أيام النجاح", T.GREEN)
-                  curTv = cur.num
-                  bestTv = best.num
-                  totalTv = total.num
-                  row.addView(cur.view, LinearLayout.LayoutParams(0, T.WRAP, 1f))
-                  row.addView(T.space(c, 10, 1))
-                  row.addView(best.view, LinearLayout.LayoutParams(0, T.WRAP, 1f))
-                  row.addView(T.space(c, 10, 1))
-                  row.addView(total.view, LinearLayout.LayoutParams(0, T.WRAP, 1f))
-                  content.addView(row, T.lpd(c, T.MATCH, T.WRAP, 0, 20, 0, 0))
-
-                  content.addView(todayCard(), T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
-                  content.addView(gridCard(), T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
-                  return scroll
+              init {
+                  build()
               }
 
-              private fun mini(label: String, tint: Int): Mini {
-                  val box = LinearLayout(c)
-                  box.orientation = LinearLayout.VERTICAL
-                  box.gravity = Gravity.CENTER_HORIZONTAL
-                  box.background = T.card(c, 20)
-                  box.setPadding(T.dp(c, 8), T.dp(c, 14), T.dp(c, 8), T.dp(c, 12))
-                  val num = T.text(c, "0", 28f, T.TEXT, true)
-                  box.addView(num)
-                  box.addView(T.text(c, label, 12f, tint, true), T.lpd(c, T.WRAP, T.WRAP, 0, 2, 0, 0))
-                  return Mini(box, num)
+              private fun makeEdit(hint: String): EditText {
+                  val e = EditText(c)
+                  e.hint = hint
+                  e.setHintTextColor(T.MUTED)
+                  e.setTextColor(T.TEXT)
+                  e.textSize = 15f
+                  e.minLines = 3
+                  e.gravity = Gravity.TOP or Gravity.START
+                  e.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                  e.background = T.card(c, 16, 0x14FFFFFF, 0x22FFFFFF)
+                  e.setPadding(T.dp(c, 14), T.dp(c, 12), T.dp(c, 14), T.dp(c, 12))
+                  return e
               }
 
-              private fun todayCard(): View {
-                  val card = LinearLayout(c)
-                  card.orientation = LinearLayout.VERTICAL
-                  card.background = T.card(c, 24)
-                  card.setPadding(T.dp(c, 18), T.dp(c, 18), T.dp(c, 18), T.dp(c, 18))
-                  card.addView(T.text(c, "كيف كان يومك؟", 18f, T.TEXT, true))
-                  dateTv = T.text(c, "", 13f, T.SUB)
-                  card.addView(dateTv, T.lpd(c, T.WRAP, T.WRAP, 0, 2, 0, 0))
+              private fun build() {
+                  add(header("مذكراتي", "اكتب ما ساعدك وما تريد تحسينه"), 0)
 
-                  val btns = LinearLayout(c)
-                  btns.orientation = LinearLayout.HORIZONTAL
-                  okBtn = T.button(c, "نجحت اليوم", T.grad(c, T.GREEN_D, T.GREEN, 18), T.ON_GREEN)
-                  slipBtn = T.button(c, "حصلت انتكاسة", T.outline(c, T.AMBER, 18), T.AMBER)
-                  okBtn.textSize = 16f
-                  slipBtn.textSize = 16f
-                  okBtn.setOnClickListener { choose(1) }
-                  slipBtn.setOnClickListener { choose(2) }
-                  btns.addView(okBtn, LinearLayout.LayoutParams(0, T.WRAP, 1f))
-                  btns.addView(T.space(c, 10, 1))
-                  btns.addView(slipBtn, LinearLayout.LayoutParams(0, T.WRAP, 1f))
-                  card.addView(btns, T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
+                  val card = T.cardBox(c, 24)
+                  card.addView(T.text(c, "مذكرة اليوم", 17f, T.TEXT, true))
+                  dateTv = T.text(c, "", 12.5f, T.SUB)
+                  card.addView(dateTv)
+                  card.addView(T.text(c, "ما الذي ساعدني اليوم؟", 14f, T.GREEN, true), T.lpd(c, T.WRAP, T.WRAP, 0, 14, 0, 0))
+                  etA = makeEdit("اكتب هنا...")
+                  card.addView(etA, T.lpd(c, T.MATCH, T.WRAP, 0, 8, 0, 0))
+                  card.addView(T.text(c, "ما الذي أريد تحسينه؟", 14f, T.AMBER, true), T.lpd(c, T.WRAP, T.WRAP, 0, 14, 0, 0))
+                  etB = makeEdit("اكتب هنا...")
+                  card.addView(etB, T.lpd(c, T.MATCH, T.WRAP, 0, 8, 0, 0))
+                  val save = T.button(c, "حفظ المذكرة (+" + GameMath.JOURNAL_XP + " XP)", T.grad(c, T.GREEN_D, T.GREEN, 18), T.ON_GREEN)
+                  save.setOnClickListener { save() }
+                  card.addView(save, T.lpd(c, T.MATCH, T.WRAP, 0, 16, 0, 0))
+                  statusTv = T.text(c, "", 12.5f, T.GREEN)
+                  statusTv.gravity = Gravity.CENTER
+                  card.addView(statusTv, T.lpd(c, T.MATCH, T.WRAP, 0, 8, 0, 0))
+                  add(card, 16)
 
-                  clearBtn = T.text(c, "إلغاء تسجيل اليوم", 13f, T.SUB)
-                  clearBtn.gravity = Gravity.CENTER
-                  clearBtn.setPadding(0, T.dp(c, 10), 0, T.dp(c, 4))
-                  clearBtn.setOnClickListener { choose(0) }
-                  card.addView(clearBtn, T.lpd(c, T.MATCH, T.WRAP))
-
-                  val box = LinearLayout(c)
-                  box.orientation = LinearLayout.VERTICAL
-                  box.background = T.card(c, 16, 0x142EE59D, 0x222EE59D)
-                  box.setPadding(T.dp(c, 14), T.dp(c, 12), T.dp(c, 14), T.dp(c, 12))
-                  msgTv = T.text(c, "", 14.5f, T.TEXT)
-                  box.addView(msgTv)
-                  card.addView(box, T.lpd(c, T.MATCH, T.WRAP, 0, 12, 0, 0))
-                  return card
-              }
-
-              private fun legend(color: Int, label: String): View {
-                  val r = LinearLayout(c)
-                  r.orientation = LinearLayout.HORIZONTAL
-                  r.gravity = Gravity.CENTER_VERTICAL
-                  val dot = View(c)
-                  dot.background = T.oval(color)
-                  r.addView(dot, LinearLayout.LayoutParams(T.dp(c, 10), T.dp(c, 10)))
-                  r.addView(T.space(c, 6, 1))
-                  r.addView(T.text(c, label, 12f, T.SUB))
-                  return r
-              }
-
-              private fun gridCard(): View {
-                  val card = LinearLayout(c)
-                  card.orientation = LinearLayout.VERTICAL
-                  card.background = T.card(c, 24)
-                  card.setPadding(T.dp(c, 14), T.dp(c, 16), T.dp(c, 14), T.dp(c, 16))
-                  card.addView(T.text(c, "آخر 28 يومًا", 16f, T.TEXT, true))
-                  val lg = LinearLayout(c)
-                  lg.orientation = LinearLayout.HORIZONTAL
-                  lg.addView(legend(0xFF1FBF86.toInt(), "نجاح"))
-                  lg.addView(T.space(c, 14, 1))
-                  lg.addView(legend(T.AMBER, "انتكاسة"))
-                  lg.addView(T.space(c, 14, 1))
-                  lg.addView(legend(0x33FFFFFF, "غير مسجل"))
-                  card.addView(lg, T.lpd(c, T.WRAP, T.WRAP, 0, 8, 0, 10))
-                  grid = LinearLayout(c)
-                  grid.orientation = LinearLayout.VERTICAL
-                  card.addView(grid, T.lpd(c, T.MATCH, T.WRAP))
-                  card.addView(T.text(c, "اضغط على أي يوم لتعديل تسجيله", 12f, T.MUTED), T.lpd(c, T.WRAP, T.WRAP, 0, 10, 0, 0))
-                  return card
+                  add(T.text(c, "مذكراتي السابقة", 16f, T.TEXT, true), 22)
+                  list = T.vbox(c)
+                  add(list, 8)
               }
 
               private fun fmt(day: Long): String =
                   LocalDate.ofEpochDay(day).format(DateTimeFormatter.ofPattern("EEEE d MMMM", Locale("ar")))
 
-              private fun choose(st: Int) {
-                  StreakStore.set(c, StreakStore.today(), st)
+              private fun loadToday() {
+                  val p = GameStore.journal(c, StreakStore.today())
+                  etA.setText(p.first)
+                  etB.setText(p.second)
+                  statusTv.text = ""
+              }
+
+              private fun save() {
+                  GameStore.saveJournal(c, StreakStore.today(), etA.text.toString(), etB.text.toString())
+                  statusTv.text = "تم الحفظ"
+                  val imm = c.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                  imm.hideSoftInputFromWindow(etA.windowToken, 0)
                   sig = ""
                   refresh()
-                  msgTv.alpha = 0f
-                  msgTv.animate().alpha(1f).setDuration(350).setInterpolator(DecelerateInterpolator()).start()
+                  a.afterChange()
               }
 
-              private fun editDay(day: Long) {
-                  AlertDialog.Builder(a, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                      .setTitle(fmt(day))
-                      .setItems(arrayOf("نجحت", "حصلت انتكاسة", "غير مسجل")) { _, which ->
-                          val st = if (which == 0) 1 else if (which == 1) 2 else 0
-                          StreakStore.set(c, day, st)
-                          sig = ""
-                          refresh()
-                      }
-                      .show()
+              private fun line(s: String, color: Int): TextView {
+                  val tv = T.text(c, s, 13.5f, color)
+                  tv.maxLines = 3
+                  tv.ellipsize = TextUtils.TruncateAt.END
+                  return tv
               }
 
-              private fun styleChoices(st: Int?) {
-                  if (st == 1) {
-                      okBtn.background = T.grad(c, T.GREEN_D, T.GREEN, 18)
-                      okBtn.setTextColor(T.ON_GREEN)
-                  } else {
-                      okBtn.background = T.outline(c, T.GREEN, 18)
-                      okBtn.setTextColor(T.GREEN)
+              private fun entryCard(d: Long): LinearLayout {
+                  val card = T.cardBox(c, 20, 16)
+                  card.addView(T.text(c, fmt(d), 14f, T.TEXT, true))
+                  val p = GameStore.journal(c, d)
+                  if (p.first.isNotBlank()) card.addView(line("ساعدني: " + p.first, T.GREEN), T.lpd(c, T.MATCH, T.WRAP, 0, 8, 0, 0))
+                  if (p.second.isNotBlank()) card.addView(line("أحسّن: " + p.second, T.AMBER), T.lpd(c, T.MATCH, T.WRAP, 0, 6, 0, 0))
+                  card.setOnClickListener {
+                      AlertDialog.Builder(a, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                          .setTitle(fmt(d))
+                          .setMessage("ما ساعدني:\n" + p.first + "\n\nما أريد تحسينه:\n" + p.second)
+                          .setPositiveButton("حسنًا", null)
+                          .show()
                   }
-                  if (st == 2) {
-                      slipBtn.background = T.grad(c, T.AMBER_D, T.AMBER, 18)
-                      slipBtn.setTextColor(T.ON_AMBER)
-                  } else {
-                      slipBtn.background = T.outline(c, T.AMBER, 18)
-                      slipBtn.setTextColor(T.AMBER)
-                  }
-              }
-
-              private fun cell(day: Long, st: Int?, isToday: Boolean): View {
-                  val f = FrameLayout(c)
-                  val size = T.dp(c, 36)
-                  val tv = T.text(c, LocalDate.ofEpochDay(day).dayOfMonth.toString(), 13f, T.SUB)
-                  tv.gravity = Gravity.CENTER
-                  var fill = 0x14FFFFFF
-                  var tc = T.SUB
-                  var edge = 0
-                  if (st == 1) {
-                      fill = 0xFF1FBF86.toInt()
-                      tc = T.ON_GREEN
-                  } else if (st == 2) {
-                      fill = 0x33FFB74D
-                      tc = T.AMBER
-                      edge = T.AMBER
-                  }
-                  val g = GradientDrawable()
-                  g.shape = GradientDrawable.OVAL
-                  g.setColor(fill)
-                  if (isToday) g.setStroke(T.dp(c, 2), T.BLUE) else if (edge != 0) g.setStroke(T.dp(c, 1), edge)
-                  tv.background = g
-                  tv.setTextColor(tc)
-                  f.addView(tv, FrameLayout.LayoutParams(size, size, Gravity.CENTER))
-                  f.setOnClickListener { editDay(day) }
-                  return f
-              }
-
-              private fun buildGrid(m: Map<Long, Int>, today: Long) {
-                  grid.removeAllViews()
-                  val start = today - 27L
-                  for (row in 0 until 4) {
-                      val r = LinearLayout(c)
-                      r.orientation = LinearLayout.HORIZONTAL
-                      for (col in 0 until 7) {
-                          val day = start + (row * 7 + col).toLong()
-                          r.addView(cell(day, m[day], day == today), LinearLayout.LayoutParams(0, T.dp(c, 44), 1f))
-                      }
-                      grid.addView(r, T.lpd(c, T.MATCH, T.WRAP, 0, if (row == 0) 0 else 4, 0, 0))
-                  }
+                  T.pressable(card)
+                  return card
               }
 
               override fun refresh() {
                   val today = StreakStore.today()
-                  val m = StreakStore.load(c)
-                  val s = StreakMath.serialize(m) + "|" + today
+                  val days = GameStore.journalDays(c).filter { it != today }.sortedDescending().take(30)
+                  val s = days.joinToString(",") + "|" + today
                   if (s == sig) return
                   sig = s
-                  val cur = StreakMath.current(m, today)
-                  curTv.text = cur.toString()
-                  bestTv.text = StreakStore.bestEver(c, m, today).toString()
-                  totalTv.text = StreakMath.count(m, StreakMath.SUCCESS).toString()
                   dateTv.text = fmt(today)
-                  val st: Int? = m[today]
-                  styleChoices(st)
-                  msgTv.text = if (st == 1) {
-                      Msgs.milestone(cur) ?: Msgs.ok(today)
-                  } else if (st == 2) {
-                      Msgs.slip(today) + "\nإنجازاتك السابقة وأطول سلسلة لك محفوظة."
-                  } else {
-                      Msgs.idle(today)
+                  list.removeAllViews()
+                  if (days.isEmpty()) {
+                      list.addView(T.text(c, "مذكراتك السابقة ستظهر هنا.", 13f, T.MUTED))
                   }
-                  clearBtn.visibility = if (st == null) View.GONE else View.VISIBLE
-                  buildGrid(m, today)
+                  for (d in days) list.addView(entryCard(d), T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
               }
 
               override fun onShown() {
+                  super.onShown()
                   sig = ""
-                  for (i in 0 until content.childCount) {
-                      val v = content.getChildAt(i)
-                      v.alpha = 0f
-                      v.translationY = T.dp(c, 18).toFloat()
-                      v.animate().alpha(1f).translationY(0f).setStartDelay(60L * i).setDuration(320)
-                          .setInterpolator(DecelerateInterpolator()).start()
-                  }
+                  loadToday()
               }
-
-              override fun onHidden() {}
           }
           EOF_FILE
           mkdir -p app/src/main/java/com/example/guard
@@ -998,25 +1369,33 @@ jobs:
           import android.app.AlertDialog
           import android.content.Intent
           import android.content.pm.PackageManager
+          import android.graphics.drawable.GradientDrawable
           import android.net.VpnService
           import android.os.Build
           import android.os.Bundle
           import android.os.Handler
           import android.os.Looper
+          import android.view.Gravity
+          import android.view.View
           import android.view.ViewGroup
           import android.view.animation.DecelerateInterpolator
           import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.TextView
           import android.widget.Toast
 
-          // Hosts the three pages (home, victory log, settings) and owns the protection actions.
-          // The blocking itself (BlockVpnService / VpnController / WatcherService / BootReceiver) is unchanged.
+          // Hosts the pages (world, quests, journal, achievements, settings) with a bottom navigation bar,
+          // celebrations (level up / new region / new badge) and the optional YouTube protection actions.
+          // The protection code itself (BlockVpnService / VpnController / WatcherService / BootReceiver) is unchanged.
           class MainActivity : Activity() {
               private lateinit var frame: FrameLayout
-              private lateinit var home: HomePage
-              private lateinit var logPage: LogPage
-              private lateinit var settings: SettingsPage
+              private lateinit var pages: List<Page>
+              private val navIcons = ArrayList<IconView>()
+              private val navLabels = ArrayList<TextView>()
               private var current: Page? = null
+              private var currentIdx = -1
               private var pendingShield = false
+              private var lastXp = 0
               private val h = Handler(Looper.getMainLooper())
               private val tick = object : Runnable {
                   override fun run() {
@@ -1028,25 +1407,71 @@ jobs:
               override fun onCreate(b: Bundle?) {
                   super.onCreate(b)
                   window.statusBarColor = T.BG_TOP
-                  window.navigationBarColor = T.BG_BOT
+                  window.navigationBarColor = T.NAV_BG
                   if (Build.VERSION.SDK_INT >= 33 &&
                       checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                       requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 5)
                   }
+                  val root = LinearLayout(this)
+                  root.orientation = LinearLayout.VERTICAL
+                  root.setBackgroundColor(T.BG_TOP)
                   frame = FrameLayout(this)
-                  frame.setBackgroundColor(T.BG_TOP)
-                  setContentView(frame)
-                  home = HomePage(this)
-                  logPage = LogPage(this)
-                  settings = SettingsPage(this)
-                  show(home, true)
+                  root.addView(frame, LinearLayout.LayoutParams(T.MATCH, 0, 1f))
+                  root.addView(buildNav(), LinearLayout.LayoutParams(T.MATCH, T.WRAP))
+                  setContentView(root)
+
+                  pages = listOf(HomePage(this), QuestsPage(this), JournalPage(this), AchievementsPage(this), SettingsPage(this))
+                  val snap = GameStore.snapshot(this)
+                  lastXp = snap.xp
+                  GameStore.takeCelebrations(this, snap)
+                  open(0)
+              }
+
+              // ---- bottom navigation ----
+              private fun buildNav(): View {
+                  val bar = LinearLayout(this)
+                  bar.orientation = LinearLayout.HORIZONTAL
+                  bar.layoutDirection = View.LAYOUT_DIRECTION_RTL
+                  val g = GradientDrawable()
+                  g.setColor(T.NAV_BG)
+                  g.setStroke(T.dp(this, 1), 0x22FFFFFF)
+                  bar.background = g
+                  val labels = listOf("عالمي", "المهمات", "مذكراتي", "إنجازاتي")
+                  val kinds = listOf(IconView.WORLD, IconView.QUESTS, IconView.BOOK, IconView.TROPHY)
+                  for (i in 0 until 4) {
+                      val item = LinearLayout(this)
+                      item.orientation = LinearLayout.VERTICAL
+                      item.gravity = Gravity.CENTER_HORIZONTAL
+                      item.setPadding(0, T.dp(this, 8), 0, T.dp(this, 8))
+                      val ic = IconView(this, kinds[i], T.MUTED)
+                      item.addView(ic, LinearLayout.LayoutParams(T.dp(this, 24), T.dp(this, 24)))
+                      val tv = T.text(this, labels[i], 11f, T.MUTED, true)
+                      item.addView(tv, T.lpd(this, T.WRAP, T.WRAP, 0, 3, 0, 0))
+                      item.setOnClickListener { open(i) }
+                      navIcons.add(ic)
+                      navLabels.add(tv)
+                      bar.addView(item, LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                  }
+                  return bar
+              }
+
+              private fun setNavSelected(idx: Int) {
+                  for (i in 0 until navIcons.size) {
+                      val on = i == idx
+                      navIcons[i].setIconTint(if (on) T.GREEN else T.MUTED)
+                      navLabels[i].setTextColor(if (on) T.GREEN else T.MUTED)
+                      navIcons[i].animate().scaleX(if (on) 1.18f else 1f).scaleY(if (on) 1.18f else 1f).setDuration(180).start()
+                  }
               }
 
               // ---- navigation (fade + slide) ----
-              private fun show(p: Page, forward: Boolean) {
+              private fun open(idx: Int) {
+                  if (idx == currentIdx) return
+                  val forward = idx > currentIdx
+                  val p = pages[idx]
                   val old = current
-                  if (old === p) return
                   current = p
+                  currentIdx = idx
                   val dist = T.dp(this, 28).toFloat()
                   p.root.animate().cancel()
                   (p.root.parent as? ViewGroup)?.removeView(p.root)
@@ -1057,6 +1482,7 @@ jobs:
                   p.root.animate().alpha(1f).translationX(0f).setDuration(260)
                       .setInterpolator(DecelerateInterpolator()).start()
                   p.onShown()
+                  setNavSelected(idx)
                   if (old != null) {
                       old.onHidden()
                       old.root.animate().alpha(0f).translationX(if (forward) dist else -dist).setDuration(200)
@@ -1064,15 +1490,15 @@ jobs:
                   }
               }
 
-              fun goHome() = show(home, false)
-              fun goLog() = show(logPage, true)
-              fun goSettings() = show(settings, true)
+              fun goTab(i: Int) = open(i)
+              fun goHome() = open(0)
+              fun goSettings() = open(4)
 
               override fun onBackPressed() {
-                  if (current !== home) show(home, false) else super.onBackPressed()
+                  if (currentIdx != 0) open(0) else super.onBackPressed()
               }
 
-              // ---- small helpers used by the pages ----
+              // ---- helpers used by the pages ----
               fun toast(s: String) {
                   Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
               }
@@ -1086,7 +1512,46 @@ jobs:
                       .show()
               }
 
-              // ---- protection actions ----
+              private fun xpPop(s: String) {
+                  val tv = T.text(this, s, 22f, T.GREEN, true)
+                  tv.background = T.card(this, 20, 0xCC0B1A2B.toInt(), 0x552EE59D)
+                  tv.setPadding(T.dp(this, 18), T.dp(this, 8), T.dp(this, 18), T.dp(this, 8))
+                  val lp = FrameLayout.LayoutParams(T.WRAP, T.WRAP, Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM)
+                  lp.bottomMargin = T.dp(this, 90)
+                  frame.addView(tv, lp)
+                  tv.alpha = 0f
+                  tv.animate().alpha(1f).translationY(-T.dp(this, 40).toFloat()).setDuration(500).withEndAction {
+                      tv.animate().alpha(0f).setDuration(500).withEndAction { frame.removeView(tv) }.start()
+                  }.start()
+              }
+
+              // Call after anything that can change XP, level or badges.
+              fun afterChange() {
+                  val snap = GameStore.snapshot(this)
+                  if (snap.xp > lastXp) xpPop("+" + (snap.xp - lastXp) + " XP")
+                  lastXp = snap.xp
+                  val cel = GameStore.takeCelebrations(this, snap)
+                  if (cel.level > 0 || cel.badges.isNotEmpty()) celebrate(cel)
+                  current?.refresh()
+              }
+
+              private fun celebrate(cel: GameStore.Celebration) {
+                  val sb = StringBuilder()
+                  if (cel.level > 0) {
+                      sb.append("ارتقيت إلى المستوى ").append(cel.level).append(": ").append(Msgs.levelTitle(cel.level)).append("\n")
+                      if (cel.newRegion) {
+                          sb.append("منطقة جديدة في عالمك: ").append(Msgs.regionName(GameMath.regionsUnlocked(cel.level) - 1)).append("\n")
+                      }
+                  }
+                  for (b in cel.badges) sb.append("شارة جديدة: ").append(Msgs.badgeTitle(b)).append("\n")
+                  AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                      .setTitle("مبروك!")
+                      .setMessage(sb.toString().trim())
+                      .setPositiveButton("رائع", null)
+                      .show()
+              }
+
+              // ---- optional YouTube protection actions (unchanged behaviour) ----
               fun toggleProtection() {
                   if (BlockVpnService.running) requestStop() else requestStart()
               }
@@ -1159,7 +1624,7 @@ jobs:
           cat > app/src/main/java/com/example/guard/Msgs.kt <<'EOF_FILE'
           package com.example.guard
 
-          // Encouraging, never blaming.
+          // All user-facing game text. Encouraging, never blaming.
           object Msgs {
               private val okList = listOf(
                   "أحسنت! يوم جديد يُضاف إلى انتصاراتك.",
@@ -1169,22 +1634,43 @@ jobs:
                   "فخورون بثباتك. واصل بهدوء."
               )
               private val slipList = listOf(
-                  "الانتكاسة ليست نهاية الطريق. أنت تتعلّم وتعود أقوى.",
+                  "التعثّر ليس نهاية الطريق. أنت تتعلّم وتعود أقوى.",
                   "لا لوم هنا. أهم ما في الأمر أنك صادق مع نفسك.",
                   "يوم صعب لا يمحو ما بنيته. ابدأ من جديد بهدوء.",
                   "كل من سار في هذا الطريق تعثّر مرة. المهم أن تنهض."
               )
               private val idleList = listOf(
                   "سجّل يومك متى شئت. لا ضغط هنا.",
-                  "اليوم غير مسجل بعد، وهذا لا يُحسب نجاحًا ولا انتكاسة.",
+                  "اليوم غير مسجل بعد، وهذا لا يُحسب نجاحًا ولا تعثّرًا.",
                   "خذ وقتك. حين تكون جاهزًا سجّل يومك."
               )
-              private val shieldList = listOf(
-                  "تنفّس ببطء، الرغبة موجة وتعدّي.",
-                  "قم من مكانك واشرب كوب ماء.",
-                  "غيّر المكان، وافتح نافذة، وامشِ قليلًا.",
-                  "أنت أقوى من هذه اللحظة.",
-                  "دقائق قليلة وتهدأ الموجة. أنت تفعلها."
+              private val regions = listOf(
+                  "جزيرة الانطلاق", "غابة الهدوء", "بحيرة الصفاء", "جبل العزيمة", "قلعة الثبات", "مدينة النور"
+              )
+              private val questT = listOf(
+                  "ابتعدت عن المقاطع المحفّزة",
+                  "تركت الهاتف عند ظهور الرغبة",
+                  "مارست نشاطًا مفيدًا"
+              )
+              private val questD = listOf(
+                  "تجنّبت أي محتوى يثير الرغبة",
+                  "ابتعدت عن الجوال في لحظة الرغبة",
+                  "رياضة أو قراءة أو مشي أو أي شيء ينفعك"
+              )
+              private val badges = mapOf(
+                  "s1" to Pair("خطوة أولى", "أول يوم من الثبات"),
+                  "s3" to Pair("ثلاثة أيام", "٣ أيام متتالية من الثبات"),
+                  "s7" to Pair("أسبوع كامل", "٧ أيام متتالية"),
+                  "s14" to Pair("أسبوعان", "١٤ يومًا متتاليًا"),
+                  "s30" to Pair("شهر من الثبات", "٣٠ يومًا متتاليًا"),
+                  "j1" to Pair("أول مذكرة", "كتبت أول مذكرة يومية"),
+                  "j7" to Pair("كاتب مثابر", "٧ أيام من المذكرات"),
+                  "p1" to Pair("يوم مثالي", "أنجزت المهمات الثلاث ونجحت في يوم واحد"),
+                  "p7" to Pair("سبعة أيام مثالية", "٧ أيام مثالية"),
+                  "c3" to Pair("عودة قوية", "٣ أيام نجاح متتالية بعد تعثّر"),
+                  "t10" to Pair("عشرة انتصارات", "١٠ أيام نجاح بالمجموع"),
+                  "l5" to Pair("المستوى ٥", "وصلت إلى المستوى ٥"),
+                  "l10" to Pair("المستوى ١٠", "وصلت إلى المستوى ١٠")
               )
 
               private fun pick(list: List<String>, seed: Long): String {
@@ -1195,7 +1681,23 @@ jobs:
               fun ok(day: Long): String = pick(okList, day)
               fun slip(day: Long): String = pick(slipList, day)
               fun idle(day: Long): String = pick(idleList, day)
-              fun shield(minute: Long): String = pick(shieldList, minute)
+
+              fun levelTitle(l: Int): String = when {
+                  l <= 1 -> "بذرة"
+                  l == 2 -> "نبتة"
+                  l <= 4 -> "شتلة"
+                  l <= 6 -> "شجرة فتية"
+                  l <= 9 -> "محارب هادئ"
+                  l <= 14 -> "حارس الثبات"
+                  l <= 19 -> "فارس الإرادة"
+                  else -> "أسطورة"
+              }
+
+              fun regionName(i: Int): String = regions[if (i < 0) 0 else if (i >= regions.size) regions.size - 1 else i]
+              fun questTitle(i: Int): String = questT[i]
+              fun questDesc(i: Int): String = questD[i]
+              fun badgeTitle(id: String): String = badges[id]?.first ?: id
+              fun badgeDesc(id: String): String = badges[id]?.second ?: ""
 
               fun milestone(n: Int): String? = when (n) {
                   1 -> "بداية رائعة، اليوم الأول انتصار."
@@ -1257,139 +1759,272 @@ jobs:
           }
           EOF_FILE
           mkdir -p app/src/main/java/com/example/guard
-          cat > app/src/main/java/com/example/guard/RingView.kt <<'EOF_FILE'
+          cat > app/src/main/java/com/example/guard/QuestsPage.kt <<'EOF_FILE'
+          package com.example.guard
+
+          import android.view.Gravity
+          import android.view.View
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import java.time.LocalDate
+          import java.time.format.DateTimeFormatter
+          import java.util.Locale
+
+          // "المهمات": three daily quests (each gives XP) + the daily check-in (success / stumble).
+          class QuestsPage(a: MainActivity) : ScrollPage(a) {
+              private val checks = ArrayList<FrameLayout>()
+              private val checkIcons = ArrayList<IconView>()
+              private lateinit var dateTv: TextView
+              private lateinit var progText: TextView
+              private lateinit var progBar: BarView
+              private lateinit var okBtn: TextView
+              private lateinit var slipBtn: TextView
+              private lateinit var clearBtn: TextView
+              private lateinit var msgTv: TextView
+              private var sig = ""
+
+              init {
+                  build()
+              }
+
+              private fun build() {
+                  add(header("مهمات اليوم", ""), 0)
+                  dateTv = T.text(c, "", 13f, T.SUB)
+                  content.addView(dateTv, T.lpd(c, T.WRAP, T.WRAP, 0, 2, 0, 0))
+
+                  val prog = T.cardBox(c)
+                  val row = T.hbox(c)
+                  row.addView(T.text(c, "تقدّم اليوم", 15f, T.TEXT, true), LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                  progText = T.text(c, "", 13f, T.SUB)
+                  row.addView(progText)
+                  prog.addView(row)
+                  progBar = BarView(c)
+                  prog.addView(progBar, T.lpd(c, T.MATCH, T.dp(c, 12), 0, 12, 0, 0))
+                  add(prog, 16)
+
+                  val icons = intArrayOf(IconView.SHIELD, IconView.TIMER, IconView.FLAME)
+                  val tints = intArrayOf(T.BLUE, T.AMBER, T.GREEN)
+                  for (i in 0 until GameMath.QUESTS) add(questRow(i, icons[i], tints[i]), 12)
+
+                  add(checkInCard(), 16)
+              }
+
+              private fun questRow(i: Int, kind: Int, tint: Int): View {
+                  val row = T.hbox(c)
+                  row.background = T.card(c, 22)
+                  row.setPadding(T.dp(c, 16), T.dp(c, 16), T.dp(c, 16), T.dp(c, 16))
+                  row.addView(T.iconBubble(c, kind, tint, 46), LinearLayout.LayoutParams(T.dp(c, 46), T.dp(c, 46)))
+                  row.addView(T.space(c, 14, 1))
+                  val tx = T.vbox(c)
+                  tx.addView(T.text(c, Msgs.questTitle(i), 15.5f, T.TEXT, true))
+                  tx.addView(T.text(c, Msgs.questDesc(i), 12.5f, T.SUB))
+                  tx.addView(T.text(c, "+" + GameMath.QUEST_XP + " XP", 12f, T.GREEN, true))
+                  row.addView(tx, LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                  val chk = FrameLayout(c)
+                  val ic = IconView(c, IconView.CHECK, T.ON_GREEN)
+                  chk.addView(ic, FrameLayout.LayoutParams(T.dp(c, 18), T.dp(c, 18), Gravity.CENTER))
+                  row.addView(chk, LinearLayout.LayoutParams(T.dp(c, 34), T.dp(c, 34)))
+                  checks.add(chk)
+                  checkIcons.add(ic)
+                  row.setOnClickListener { toggle(i) }
+                  T.pressable(row)
+                  return row
+              }
+
+              private fun checkInCard(): View {
+                  val card = T.cardBox(c, 24)
+                  card.addView(T.text(c, "كيف كان يومك؟", 18f, T.TEXT, true))
+                  card.addView(T.text(c, "سجّل يومك بصدق. لا حكم هنا، فقط تطوّر.", 12.5f, T.SUB), T.lpd(c, T.WRAP, T.WRAP, 0, 2, 0, 0))
+                  val btns = LinearLayout(c)
+                  btns.orientation = LinearLayout.HORIZONTAL
+                  okBtn = T.button(c, "نجحت اليوم", T.grad(c, T.GREEN_D, T.GREEN, 18), T.ON_GREEN)
+                  slipBtn = T.button(c, "تعثّرت اليوم", T.outline(c, T.AMBER, 18), T.AMBER)
+                  okBtn.textSize = 16f
+                  slipBtn.textSize = 16f
+                  okBtn.setOnClickListener { choose(1) }
+                  slipBtn.setOnClickListener { choose(2) }
+                  btns.addView(okBtn, LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                  btns.addView(T.space(c, 10, 1))
+                  btns.addView(slipBtn, LinearLayout.LayoutParams(0, T.WRAP, 1f))
+                  card.addView(btns, T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
+                  clearBtn = T.text(c, "إلغاء تسجيل اليوم", 13f, T.SUB)
+                  clearBtn.gravity = Gravity.CENTER
+                  clearBtn.setPadding(0, T.dp(c, 10), 0, T.dp(c, 4))
+                  clearBtn.setOnClickListener { choose(0) }
+                  card.addView(clearBtn, T.lpd(c, T.MATCH, T.WRAP))
+                  val box = T.cardBox(c, 16, 14)
+                  box.background = T.card(c, 16, 0x142EE59D, 0x222EE59D)
+                  msgTv = T.text(c, "", 14.5f, T.TEXT)
+                  box.addView(msgTv)
+                  card.addView(box, T.lpd(c, T.MATCH, T.WRAP, 0, 12, 0, 0))
+                  return card
+              }
+
+              private fun bounce(v: View) {
+                  v.animate().scaleX(1.25f).scaleY(1.25f).setDuration(120).withEndAction {
+                      v.animate().scaleX(1f).scaleY(1f).setDuration(160).start()
+                  }.start()
+              }
+
+              private fun toggle(i: Int) {
+                  val day = StreakStore.today()
+                  val done = ((GameStore.mask(c, day) shr i) and 1) == 1
+                  GameStore.setQuest(c, day, i, !done)
+                  sig = ""
+                  refresh()
+                  if (!done) bounce(checks[i])
+                  a.afterChange()
+              }
+
+              private fun choose(st: Int) {
+                  StreakStore.set(c, StreakStore.today(), st)
+                  sig = ""
+                  refresh()
+                  msgTv.alpha = 0f
+                  msgTv.animate().alpha(1f).setDuration(350).start()
+                  a.afterChange()
+              }
+
+              private fun styleChoices(st: Int?) {
+                  if (st == 1) {
+                      okBtn.background = T.grad(c, T.GREEN_D, T.GREEN, 18)
+                      okBtn.setTextColor(T.ON_GREEN)
+                  } else {
+                      okBtn.background = T.outline(c, T.GREEN, 18)
+                      okBtn.setTextColor(T.GREEN)
+                  }
+                  if (st == 2) {
+                      slipBtn.background = T.grad(c, T.AMBER_D, T.AMBER, 18)
+                      slipBtn.setTextColor(T.ON_AMBER)
+                  } else {
+                      slipBtn.background = T.outline(c, T.AMBER, 18)
+                      slipBtn.setTextColor(T.AMBER)
+                  }
+              }
+
+              override fun refresh() {
+                  val today = StreakStore.today()
+                  val mask = GameStore.mask(c, today)
+                  val st: Int? = StreakStore.load(c)[today]
+                  val s = mask.toString() + "|" + st + "|" + today
+                  if (s == sig) return
+                  sig = s
+                  dateTv.text = LocalDate.ofEpochDay(today).format(DateTimeFormatter.ofPattern("EEEE d MMMM", Locale("ar")))
+                  val done = GameMath.questsDone(mask)
+                  progText.text = done.toString() + " من " + GameMath.QUESTS + " · " + GameMath.dayXp(mask, st == 1, false) + " XP"
+                  progBar.animateTo(done.toFloat() / GameMath.QUESTS.toFloat())
+                  for (i in 0 until GameMath.QUESTS) {
+                      val on = ((mask shr i) and 1) == 1
+                      checks[i].background = if (on) T.oval(T.GREEN) else T.ovalOutline(c, T.MUTED)
+                      checkIcons[i].visibility = if (on) View.VISIBLE else View.INVISIBLE
+                  }
+                  styleChoices(st)
+                  val cur = StreakMath.current(StreakStore.load(c), today)
+                  msgTv.text = if (st == 1) {
+                      Msgs.milestone(cur) ?: Msgs.ok(today)
+                  } else if (st == 2) {
+                      Msgs.slip(today) + "\nتبدأ سلسلة جديدة الآن، ومستواك وشاراتك وإنجازاتك السابقة محفوظة."
+                  } else {
+                      Msgs.idle(today)
+                  }
+                  clearBtn.visibility = if (st == null) View.GONE else View.VISIBLE
+              }
+
+              override fun onShown() {
+                  super.onShown()
+                  sig = ""
+              }
+          }
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/guard
+          cat > app/src/main/java/com/example/guard/ScrollPage.kt <<'EOF_FILE'
           package com.example.guard
 
           import android.content.Context
-          import android.graphics.Canvas
-          import android.graphics.Paint
-          import android.graphics.RectF
           import android.view.View
+          import android.view.animation.DecelerateInterpolator
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
 
-          // Circular countdown for the 10-minute shield.
-          class RingView(c: Context) : View(c) {
-              var progress: Float = 1f
-                  set(value) {
-                      field = value
-                      invalidate()
-                  }
+          // Shared scaffold for every page: dark gradient, scrolling content, staggered entrance animation.
+          abstract class ScrollPage(protected val a: MainActivity) : Page {
+              protected val c: Context = a
+              protected val content: LinearLayout = LinearLayout(a)
+              private val scroll: ScrollView = ScrollView(a)
 
-              private val bg = Paint(Paint.ANTI_ALIAS_FLAG)
-              private val fg = Paint(Paint.ANTI_ALIAS_FLAG)
+              override val root: View
+                  get() = scroll
 
               init {
-                  bg.style = Paint.Style.STROKE
-                  bg.color = 0x22FFFFFF
-                  fg.style = Paint.Style.STROKE
-                  fg.color = T.GREEN
-                  fg.strokeCap = Paint.Cap.ROUND
+                  scroll.background = T.screenBg()
+                  scroll.isFillViewport = true
+                  scroll.isVerticalScrollBarEnabled = false
+                  content.orientation = LinearLayout.VERTICAL
+                  content.layoutDirection = View.LAYOUT_DIRECTION_RTL
+                  content.setPadding(T.dp(a, 20), T.dp(a, 40), T.dp(a, 20), T.dp(a, 24))
+                  scroll.addView(content, FrameLayout.LayoutParams(T.MATCH, T.WRAP))
               }
 
-              override fun onDraw(canvas: Canvas) {
-                  val w = width.toFloat()
-                  val h = height.toFloat()
-                  val sw = minOf(w, h) * 0.07f
-                  bg.strokeWidth = sw
-                  fg.strokeWidth = sw
-                  val r = RectF(sw, sw, w - sw, h - sw)
-                  canvas.drawArc(r, 0f, 360f, false, bg)
-                  canvas.drawArc(r, -90f, 360f * progress, false, fg)
+              protected fun add(v: View, top: Int = 14) {
+                  content.addView(v, T.lpd(c, T.MATCH, T.WRAP, 0, top, 0, 0))
               }
+
+              protected fun header(title: String, sub: String): View {
+                  val v = T.vbox(c)
+                  v.addView(T.text(c, title, 26f, T.TEXT, true))
+                  if (sub.isNotEmpty()) v.addView(T.text(c, sub, 13f, T.SUB), T.lpd(c, T.WRAP, T.WRAP, 0, 2, 0, 0))
+                  return v
+              }
+
+              override fun onShown() {
+                  for (i in 0 until content.childCount) {
+                      val v = content.getChildAt(i)
+                      v.alpha = 0f
+                      v.translationY = T.dp(c, 18).toFloat()
+                      v.animate().alpha(1f).translationY(0f).setStartDelay(60L * i).setDuration(320)
+                          .setInterpolator(DecelerateInterpolator()).start()
+                  }
+              }
+
+              override fun onHidden() {}
           }
           EOF_FILE
           mkdir -p app/src/main/java/com/example/guard
           cat > app/src/main/java/com/example/guard/SettingsPage.kt <<'EOF_FILE'
           package com.example.guard
 
-          import android.content.Context
           import android.content.Intent
           import android.net.Uri
           import android.provider.Settings
           import android.view.Gravity
-          import android.view.View
-          import android.view.animation.DecelerateInterpolator
-          import android.widget.FrameLayout
           import android.widget.LinearLayout
-          import android.widget.ScrollView
           import android.widget.TextView
 
-          class SettingsPage(private val a: MainActivity) : Page {
-              private val c: Context = a
-              private lateinit var content: LinearLayout
+          // Settings. The YouTube protection (local VPN) now lives here as an optional feature.
+          class SettingsPage(a: MainActivity) : ScrollPage(a) {
               private lateinit var vpnLine: TextView
               private lateinit var autoLine: TextView
               private lateinit var lastLine: TextView
               private lateinit var errLine: TextView
+              private lateinit var toggleBtn: TextView
+              private lateinit var shieldLine: TextView
+              private var toggleKey = -1
 
-              override val root: View = build()
-
-              private fun build(): View {
-                  val scroll = ScrollView(c)
-                  scroll.background = T.screenBg()
-                  scroll.isFillViewport = true
-                  scroll.isVerticalScrollBarEnabled = false
-
-                  content = LinearLayout(c)
-                  content.orientation = LinearLayout.VERTICAL
-                  content.layoutDirection = View.LAYOUT_DIRECTION_RTL
-                  content.setPadding(T.dp(c, 20), T.dp(c, 44), T.dp(c, 20), T.dp(c, 28))
-                  scroll.addView(content, FrameLayout.LayoutParams(T.MATCH, T.WRAP))
-
-                  val head = LinearLayout(c)
-                  head.orientation = LinearLayout.HORIZONTAL
-                  head.gravity = Gravity.CENTER_VERTICAL
-                  head.addView(T.roundIcon(c, IconView.BACK) { a.goHome() }, LinearLayout.LayoutParams(T.dp(c, 44), T.dp(c, 44)))
-                  head.addView(T.space(c, 14, 1))
-                  head.addView(T.text(c, "الإعدادات", 22f, T.TEXT, true))
-                  content.addView(head, T.lpd(c, T.MATCH, T.WRAP))
-
-                  val s1 = section("الحماية")
-                  vpnLine = T.text(c, "", 14f, T.TEXT)
-                  autoLine = T.text(c, "", 14f, T.TEXT)
-                  lastLine = T.text(c, "", 12.5f, T.SUB)
-                  errLine = T.text(c, "", 12.5f, 0xFFFF8A80.toInt())
-                  s1.addView(vpnLine, T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
-                  s1.addView(autoLine, T.lpd(c, T.MATCH, T.WRAP, 0, 6, 0, 0))
-                  s1.addView(lastLine, T.lpd(c, T.MATCH, T.WRAP, 0, 6, 0, 0))
-                  s1.addView(errLine, T.lpd(c, T.MATCH, T.WRAP, 0, 6, 0, 0))
-                  s1.addView(action("إيقاف الحماية مؤقتًا", T.AMBER) { a.requestStop() }, T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
-                  s1.addView(note("الإيقاف مؤقت: تعود الحماية تلقائيًا عند فتح القفل القادم، أو اضغط تشغيل لتعود فورًا. يطلب التطبيق تأكيدك قبل الإيقاف حتى لا يحدث بالخطأ."), T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
-                  content.addView(s1, T.lpd(c, T.MATCH, T.WRAP, 0, 16, 0, 0))
-
-                  val s2 = section("الاستمرارية في الخلفية")
-                  s2.addView(note("لتعمل الحماية بعد إعادة التشغيل: فعّل «التشغيل التلقائي» وخلّي البطارية «بدون قيود» لثبات."), T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
-                  s2.addView(action("إعدادات التطبيق والبطارية", T.BLUE) {
-                      launchIntent(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + c.packageName)))
-                  }, T.lpd(c, T.MATCH, T.WRAP, 0, 12, 0, 0))
-                  s2.addView(action("إعدادات الإشعارات", T.BLUE) {
-                      launchIntent(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, c.packageName))
-                  }, T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
-                  content.addView(s2, T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
-
-                  val s3 = section("الإيقاف الكامل عند الحاجة الحقيقية")
-                  s3.addView(note("يمكنك دائمًا قطع الحماية بنفسك: من إعدادات VPN في النظام، أو بإلغاء تثبيت التطبيق. لا شيء يمنعك من ذلك."), T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
-                  s3.addView(action("فتح إعدادات VPN في النظام", T.SUB) { launchIntent(Intent(Settings.ACTION_VPN_SETTINGS)) }, T.lpd(c, T.MATCH, T.WRAP, 0, 12, 0, 0))
-                  content.addView(s3, T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
-
-                  val s4 = section("عن ثبات")
-                  s4.addView(note("ثبات يحجب إنترنت تطبيق YouTube فقط. لا يلمس المكالمات ولا الطوارئ ولا أي تطبيق آخر، ولا يحتوي إذن إنترنت، فلا يرسل أي بيانات. سجل انتصاراتك محفوظ على جهازك فقط."), T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
-                  s4.addView(T.text(c, "الإصدار 20", 12f, T.MUTED), T.lpd(c, T.WRAP, T.WRAP, 0, 10, 0, 0))
-                  content.addView(s4, T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
-                  return scroll
+              init {
+                  build()
               }
 
               private fun section(title: String): LinearLayout {
-                  val box = LinearLayout(c)
-                  box.orientation = LinearLayout.VERTICAL
-                  box.background = T.card(c, 24)
-                  box.setPadding(T.dp(c, 18), T.dp(c, 16), T.dp(c, 18), T.dp(c, 16))
+                  val box = T.cardBox(c, 24)
                   box.addView(T.text(c, title, 16f, T.TEXT, true))
                   return box
               }
 
               private fun note(s: String): TextView = T.text(c, s, 12.5f, T.SUB)
 
-              private fun action(label: String, color: Int, onClick: () -> Unit): View {
+              private fun action(label: String, color: Int, onClick: () -> Unit): TextView {
                   val b = T.button(c, label, T.outline(c, color, 16), color)
                   b.textSize = 15f
                   b.setOnClickListener { onClick() }
@@ -1404,30 +2039,97 @@ jobs:
                   }
               }
 
+              private fun build() {
+                  val head = T.hbox(c)
+                  head.addView(T.roundIcon(c, IconView.BACK) { a.goHome() }, LinearLayout.LayoutParams(T.dp(c, 44), T.dp(c, 44)))
+                  head.addView(T.space(c, 14, 1))
+                  head.addView(T.text(c, "الإعدادات", 22f, T.TEXT, true))
+                  content.addView(head, T.lpd(c, T.MATCH, T.WRAP))
+
+                  val s1 = section("حماية YouTube (اختياري)")
+                  s1.addView(note("يحجب إنترنت تطبيق YouTube فقط عبر VPN محلي، ولا يؤثر على بقية التطبيقات. يمكنك تركه متوقفًا، وتجربتك في ثبات تعمل بدونه."), T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
+                  vpnLine = T.text(c, "", 14f, T.TEXT)
+                  autoLine = T.text(c, "", 14f, T.TEXT)
+                  lastLine = T.text(c, "", 12.5f, T.SUB)
+                  errLine = T.text(c, "", 12.5f, 0xFFFF8A80.toInt())
+                  s1.addView(vpnLine, T.lpd(c, T.MATCH, T.WRAP, 0, 12, 0, 0))
+                  s1.addView(autoLine, T.lpd(c, T.MATCH, T.WRAP, 0, 6, 0, 0))
+                  s1.addView(lastLine, T.lpd(c, T.MATCH, T.WRAP, 0, 6, 0, 0))
+                  s1.addView(errLine, T.lpd(c, T.MATCH, T.WRAP, 0, 6, 0, 0))
+                  toggleBtn = T.button(c, "", T.grad(c, T.GREEN_D, T.GREEN, 16), T.ON_GREEN)
+                  toggleBtn.textSize = 15f
+                  toggleBtn.setOnClickListener { a.toggleProtection() }
+                  s1.addView(toggleBtn, T.lpd(c, T.MATCH, T.WRAP, 0, 14, 0, 0))
+                  s1.addView(action("درع الـ10 دقائق", T.BLUE) {
+                      a.confirm(
+                          "تفعيل درع الـ10 دقائق؟",
+                          "ستبقى الحماية مفعّلة ولا يمكن إيقافها من التطبيق لمدة 10 دقائق. استخدمه عند اللحظات الصعبة.",
+                          "فعّل الدرع"
+                      ) { a.startShield() }
+                  }, T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
+                  shieldLine = T.text(c, "", 13f, T.BLUE, true)
+                  shieldLine.gravity = Gravity.CENTER
+                  s1.addView(shieldLine, T.lpd(c, T.MATCH, T.WRAP, 0, 8, 0, 0))
+                  s1.addView(note("الإيقاف مؤقت: تعود الحماية تلقائيًا عند فتح القفل القادم، أو اضغط تشغيل لتعود فورًا. يطلب التطبيق تأكيدك قبل الإيقاف حتى لا يحدث بالخطأ."), T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
+                  add(s1, 16)
+
+                  val s2 = section("الاستمرارية في الخلفية")
+                  s2.addView(note("لتعمل الحماية بعد إعادة التشغيل: فعّل «التشغيل التلقائي» وخلّي البطارية «بدون قيود» لثبات."), T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
+                  s2.addView(action("إعدادات التطبيق والبطارية", T.BLUE) {
+                      launchIntent(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + c.packageName)))
+                  }, T.lpd(c, T.MATCH, T.WRAP, 0, 12, 0, 0))
+                  s2.addView(action("إعدادات الإشعارات", T.BLUE) {
+                      launchIntent(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, c.packageName))
+                  }, T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
+                  add(s2)
+
+                  val s3 = section("الإيقاف الكامل عند الحاجة الحقيقية")
+                  s3.addView(note("يمكنك دائمًا قطع الحماية بنفسك: من إعدادات VPN في النظام، أو بإلغاء تثبيت التطبيق. لا شيء يمنعك من ذلك."), T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
+                  s3.addView(action("فتح إعدادات VPN في النظام", T.SUB) { launchIntent(Intent(Settings.ACTION_VPN_SETTINGS)) }, T.lpd(c, T.MATCH, T.WRAP, 0, 12, 0, 0))
+                  add(s3)
+
+                  val s4 = section("عن ثبات")
+                  s4.addView(note("ثبات تطبيق إنجازات وتطوير ذاتي: عالم ينمو، ومستويات، ومهمات، وشارات، ومذكرات. كل بياناتك محفوظة على جهازك فقط، والتطبيق لا يحتوي إذن إنترنت فلا يرسل أي شيء. التعثّر يبدأ سلسلة جديدة ولا يُسقط مستواك ولا شاراتك."), T.lpd(c, T.MATCH, T.WRAP, 0, 10, 0, 0))
+                  s4.addView(T.text(c, "الإصدار 21", 12f, T.MUTED), T.lpd(c, T.WRAP, T.WRAP, 0, 10, 0, 0))
+                  add(s4)
+              }
+
               override fun refresh() {
-                  val state = if (BlockVpnService.running) "شغّال"
-                      else if (Prefs.armed(c) && Prefs.paused(c)) "متوقف مؤقتًا"
-                      else if (Prefs.armed(c)) "بانتظار التشغيل"
+                  val running = BlockVpnService.running
+                  val armed = Prefs.armed(c)
+                  val paused = Prefs.paused(c)
+                  val state = if (running) "شغّال"
+                      else if (armed && paused) "متوقف مؤقتًا"
+                      else if (armed) "بانتظار التشغيل"
                       else "غير مفعّل"
                   vpnLine.text = "حالة VPN: " + state
-                  autoLine.text = "التشغيل التلقائي: " + (if (Prefs.armed(c)) "مفعّل" else "غير مفعّل بعد")
+                  autoLine.text = "التشغيل التلقائي: " + (if (armed) "مفعّل" else "غير مفعّل بعد")
                   val auto = Prefs.dbg(c, "auto")
                   lastLine.text = if (auto.isEmpty()) "" else "آخر تشغيل تلقائي: " + auto
                   val err = Prefs.dbg(c, "err")
                   errLine.text = if (err.isEmpty()) "" else "ملاحظة: " + err
-              }
 
-              override fun onShown() {
-                  for (i in 0 until content.childCount) {
-                      val v = content.getChildAt(i)
-                      v.alpha = 0f
-                      v.translationY = T.dp(c, 18).toFloat()
-                      v.animate().alpha(1f).translationY(0f).setStartDelay(60L * i).setDuration(320)
-                          .setInterpolator(DecelerateInterpolator()).start()
+                  val key = if (running) 1 else 0
+                  if (key != toggleKey) {
+                      toggleKey = key
+                      if (running) {
+                          toggleBtn.background = T.outline(c, T.AMBER, 16)
+                          toggleBtn.setTextColor(T.AMBER)
+                      } else {
+                          toggleBtn.background = T.grad(c, T.GREEN_D, T.GREEN, 16)
+                          toggleBtn.setTextColor(T.ON_GREEN)
+                      }
+                      toggleBtn.setPadding(T.dp(c, 16), T.dp(c, 16), T.dp(c, 16), T.dp(c, 16))
+                  }
+                  toggleBtn.text = if (running) "إيقاف مؤقت" else (if (armed) "تشغيل الآن" else "تشغيل الحماية")
+                  val left = Prefs.shieldLeft(c)
+                  if (left > 0L) {
+                      val sec = (left / 1000L).toInt()
+                      shieldLine.text = "الدرع نشط: " + "%02d:%02d".format(sec / 60, sec % 60)
+                  } else {
+                      shieldLine.text = ""
                   }
               }
-
-              override fun onHidden() {}
           }
           EOF_FILE
           mkdir -p app/src/main/java/com/example/guard
@@ -1602,6 +2304,7 @@ jobs:
               const val BG_TOP = 0xFF070F1C.toInt()
               const val BG_MID = 0xFF0B1C30.toInt()
               const val BG_BOT = 0xFF0C2F3E.toInt()
+              const val NAV_BG = 0xFF0A1626.toInt()
               const val CARD = 0x1FFFFFFF
               const val CARD_STROKE = 0x2EFFFFFF
               const val GREEN = 0xFF2EE59D.toInt()
@@ -1630,6 +2333,26 @@ jobs:
                   val v = View(c)
                   v.layoutParams = LinearLayout.LayoutParams(dp(c, w), dp(c, h))
                   return v
+              }
+
+              fun vbox(c: Context): LinearLayout {
+                  val l = LinearLayout(c)
+                  l.orientation = LinearLayout.VERTICAL
+                  return l
+              }
+
+              fun hbox(c: Context): LinearLayout {
+                  val l = LinearLayout(c)
+                  l.orientation = LinearLayout.HORIZONTAL
+                  l.gravity = Gravity.CENTER_VERTICAL
+                  return l
+              }
+
+              fun cardBox(c: Context, radius: Int = 22, pad: Int = 18): LinearLayout {
+                  val b = vbox(c)
+                  b.background = card(c, radius)
+                  b.setPadding(dp(c, pad), dp(c, pad), dp(c, pad), dp(c, pad))
+                  return b
               }
 
               fun screenBg(): GradientDrawable =
@@ -1666,12 +2389,11 @@ jobs:
                   return g
               }
 
-              // soft radial light used behind the shield
-              fun halo(c: Context, color: Int, sizeDp: Int): GradientDrawable {
-                  val g = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(color, color and 0x00FFFFFF))
+              fun ovalOutline(c: Context, color: Int): GradientDrawable {
+                  val g = GradientDrawable()
                   g.shape = GradientDrawable.OVAL
-                  g.gradientType = GradientDrawable.RADIAL_GRADIENT
-                  g.gradientRadius = dp(c, sizeDp).toFloat() / 2f
+                  g.setColor(0)
+                  g.setStroke(dp(c, 2), color)
                   return g
               }
 
@@ -1682,6 +2404,13 @@ jobs:
                   t.setTextColor(color)
                   if (bold) t.setTypeface(t.typeface, Typeface.BOLD)
                   t.setLineSpacing(0f, 1.2f)
+                  return t
+              }
+
+              fun pill(c: Context, s: String, color: Int): TextView {
+                  val t = text(c, s, 12.5f, color, true)
+                  t.background = card(c, 16, 0x66000000, 0x22FFFFFF)
+                  t.setPadding(dp(c, 12), dp(c, 6), dp(c, 12), dp(c, 6))
                   return t
               }
 
@@ -1711,6 +2440,14 @@ jobs:
                   f.addView(IconView(c, kind, TEXT), FrameLayout.LayoutParams(dp(c, 22), dp(c, 22), Gravity.CENTER))
                   f.setOnClickListener { onClick() }
                   pressable(f)
+                  return f
+              }
+
+              fun iconBubble(c: Context, kind: Int, tint: Int, sizeDp: Int): View {
+                  val f = FrameLayout(c)
+                  f.background = oval((tint and 0x00FFFFFF) or 0x26000000)
+                  val inner = dp(c, sizeDp * 5 / 9)
+                  f.addView(IconView(c, kind, tint), FrameLayout.LayoutParams(inner, inner, Gravity.CENTER))
                   return f
               }
 
@@ -1897,6 +2634,266 @@ jobs:
                       registered = false
                   }
                   super.onDestroy()
+              }
+          }
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/guard
+          cat > app/src/main/java/com/example/guard/WorldView.kt <<'EOF_FILE'
+          package com.example.guard
+
+          import android.animation.ValueAnimator
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.LinearGradient
+          import android.graphics.Paint
+          import android.graphics.Path
+          import android.graphics.RadialGradient
+          import android.graphics.RectF
+          import android.graphics.Shader
+          import android.view.View
+          import android.view.animation.LinearInterpolator
+
+          // The user's world, drawn in code. It starts as a small island and grows with the level:
+          // forest (L3), lake (L5), mountains (L8), castle (L12), city (L16). Locked regions stay as faint outlines.
+          class WorldView(c: Context) : View(c) {
+              var level: Int = 1
+                  set(value) {
+                      field = value
+                      invalidate()
+                  }
+
+              private val d = c.resources.displayMetrics.density
+              private var t = 0f
+              private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val path = Path()
+              private val rect = RectF()
+              private val starData = FloatArray(60)
+              private var sky: Shader? = null
+              private var ground: Shader? = null
+              private var moonGlow: Shader? = null
+              private var fireGlow: Shader? = null
+              private var anim: ValueAnimator? = null
+              private val treeX = floatArrayOf(0.06f, 0.15f, 0.24f, 0.33f, 0.40f, 0.95f, 0.10f, 0.29f, 0.62f, 0.98f, 0.20f, 0.37f)
+
+              init {
+                  val r = java.util.Random(7)
+                  for (i in 0 until 20) {
+                      starData[i * 3] = r.nextFloat()
+                      starData[i * 3 + 1] = r.nextFloat() * 0.45f
+                      starData[i * 3 + 2] = r.nextFloat()
+                  }
+              }
+
+              override fun onAttachedToWindow() {
+                  super.onAttachedToWindow()
+                  val a = ValueAnimator.ofFloat(0f, 1f)
+                  a.duration = 9000
+                  a.repeatCount = ValueAnimator.INFINITE
+                  a.interpolator = LinearInterpolator()
+                  a.addUpdateListener {
+                      t = it.animatedValue as Float
+                      invalidate()
+                  }
+                  a.start()
+                  anim = a
+              }
+
+              override fun onDetachedFromWindow() {
+                  anim?.cancel()
+                  anim = null
+                  super.onDetachedFromWindow()
+              }
+
+              override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+                  super.onSizeChanged(w, h, ow, oh)
+                  val fw = w.toFloat()
+                  val fh = h.toFloat()
+                  sky = LinearGradient(0f, 0f, 0f, fh, intArrayOf(0xFF0A1730.toInt(), 0xFF11405A.toInt(), 0xFF1C6E73.toInt()),
+                      floatArrayOf(0f, 0.6f, 1f), Shader.TileMode.CLAMP)
+                  ground = LinearGradient(0f, fh * 0.70f, 0f, fh, 0xFF22875F.toInt(), 0xFF0D4A3A.toInt(), Shader.TileMode.CLAMP)
+                  moonGlow = RadialGradient(0f, 0f, fw * 0.16f, 0x55FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP)
+                  fireGlow = RadialGradient(0f, 0f, fw * 0.13f, 0x66FFB347, 0x00FFB347, Shader.TileMode.CLAMP)
+              }
+
+              private fun tree(cv: Canvas, x: Float, base: Float, size: Float, col: Int, w: Float) {
+                  p.color = if (col == 0) 0x12FFFFFF else 0xFF5B3A29.toInt()
+                  cv.drawRect(x - 0.006f * w, base - size * 0.18f, x + 0.006f * w, base, p)
+                  p.color = if (col == 0) 0x12FFFFFF else col
+                  path.reset()
+                  path.moveTo(x, base - size)
+                  path.lineTo(x - size * 0.38f, base - size * 0.38f)
+                  path.lineTo(x + size * 0.38f, base - size * 0.38f)
+                  path.close()
+                  cv.drawPath(path, p)
+                  path.reset()
+                  path.moveTo(x, base - size * 0.72f)
+                  path.lineTo(x - size * 0.48f, base - size * 0.12f)
+                  path.lineTo(x + size * 0.48f, base - size * 0.12f)
+                  path.close()
+                  cv.drawPath(path, p)
+              }
+
+              private fun flame(cv: Canvas, x: Float, y: Float, hh: Float, ww: Float, col: Int) {
+                  p.color = col
+                  path.reset()
+                  path.moveTo(x, y - hh)
+                  path.cubicTo(x + ww, y - hh * 0.45f, x + ww * 0.8f, y, x, y)
+                  path.cubicTo(x - ww * 0.8f, y, x - ww, y - hh * 0.45f, x, y - hh)
+                  path.close()
+                  cv.drawPath(path, p)
+              }
+
+              override fun onDraw(canvas: Canvas) {
+                  val w = width.toFloat()
+                  val h = height.toFloat()
+                  if (w <= 0f || h <= 0f) return
+                  val lvl = level
+                  p.style = Paint.Style.FILL
+
+                  // sky, stars, moon, clouds
+                  p.shader = sky
+                  canvas.drawRect(0f, 0f, w, h, p)
+                  p.shader = null
+                  for (i in 0 until 20) {
+                      val tw = 0.5f + 0.5f * Math.sin(2.0 * Math.PI * (t + starData[i * 3 + 2])).toFloat()
+                      p.color = Color.argb((60 + 150 * tw).toInt(), 255, 255, 255)
+                      canvas.drawCircle(starData[i * 3] * w, starData[i * 3 + 1] * h, 1.3f * d, p)
+                  }
+                  canvas.save()
+                  canvas.translate(w * 0.82f, h * 0.2f)
+                  p.shader = moonGlow
+                  canvas.drawCircle(0f, 0f, w * 0.16f, p)
+                  p.shader = null
+                  p.color = 0xFFF4F1DE.toInt()
+                  canvas.drawCircle(0f, 0f, w * 0.04f, p)
+                  canvas.restore()
+                  p.color = 0x22FFFFFF
+                  for (i in 0 until 3) {
+                      val x = ((i * 0.45f + t * 0.25f) % 1.3f - 0.15f) * w
+                      val y = h * (0.14f + 0.09f * i)
+                      rect.set(x, y, x + w * 0.16f, y + h * 0.045f)
+                      canvas.drawOval(rect, p)
+                      rect.set(x + w * 0.04f, y - h * 0.025f, x + w * 0.12f, y + h * 0.03f)
+                      canvas.drawOval(rect, p)
+                  }
+
+                  // mountains (level 8)
+                  val mtn = lvl >= 8
+                  p.color = if (mtn) 0xFF1B3A52.toInt() else 0x14FFFFFF
+                  path.reset()
+                  path.moveTo(0f, h * 0.70f)
+                  path.lineTo(w * 0.10f, h * 0.42f)
+                  path.lineTo(w * 0.24f, h * 0.60f)
+                  path.lineTo(w * 0.40f, h * 0.34f)
+                  path.lineTo(w * 0.58f, h * 0.62f)
+                  path.lineTo(w * 0.76f, h * 0.40f)
+                  path.lineTo(w, h * 0.64f)
+                  path.lineTo(w, h * 0.70f)
+                  path.close()
+                  canvas.drawPath(path, p)
+                  if (mtn) {
+                      p.color = 0xFFDDE8F0.toInt()
+                      for (k in 0 until 3) {
+                          val px = floatArrayOf(0.10f, 0.40f, 0.76f)[k] * w
+                          val py = floatArrayOf(0.42f, 0.34f, 0.40f)[k] * h
+                          path.reset()
+                          path.moveTo(px, py)
+                          path.lineTo(px - w * 0.03f, py + h * 0.07f)
+                          path.lineTo(px + w * 0.03f, py + h * 0.07f)
+                          path.close()
+                          canvas.drawPath(path, p)
+                      }
+                  }
+
+                  // castle (level 12) and city (level 16)
+                  val castle = lvl >= 12
+                  p.color = if (castle) 0xFF244B66.toInt() else 0x14FFFFFF
+                  val cx = w * 0.20f
+                  val by = h * 0.72f
+                  canvas.drawRect(cx - 0.07f * w, by - 0.20f * h, cx + 0.07f * w, by, p)
+                  canvas.drawRect(cx - 0.095f * w, by - 0.28f * h, cx - 0.045f * w, by, p)
+                  canvas.drawRect(cx + 0.045f * w, by - 0.28f * h, cx + 0.095f * w, by, p)
+                  if (castle) {
+                      p.color = 0xFFFFD27A.toInt()
+                      canvas.drawRect(cx - 0.012f * w, by - 0.14f * h, cx + 0.012f * w, by - 0.09f * h, p)
+                      canvas.drawRect(cx - 0.08f * w, by - 0.22f * h, cx - 0.06f * w, by - 0.18f * h, p)
+                      canvas.drawRect(cx + 0.06f * w, by - 0.22f * h, cx + 0.08f * w, by - 0.18f * h, p)
+                  }
+                  val city = lvl >= 16
+                  for (i in 0 until 5) {
+                      val bx = w * (0.50f + 0.055f * i)
+                      val bh = h * (0.12f + 0.04f * ((i * 3) % 4))
+                      p.color = if (city) 0xFF1A3C55.toInt() else 0x10FFFFFF
+                      canvas.drawRect(bx, by - bh, bx + w * 0.045f, by, p)
+                      if (city) {
+                          p.color = 0xFFFFD27A.toInt()
+                          canvas.drawRect(bx + w * 0.01f, by - bh + h * 0.02f, bx + w * 0.016f, by - bh + h * 0.035f, p)
+                          canvas.drawRect(bx + w * 0.026f, by - bh + h * 0.05f, bx + w * 0.032f, by - bh + h * 0.065f, p)
+                      }
+                  }
+
+                  // island ground
+                  p.shader = ground
+                  rect.set(-0.1f * w, h * 0.70f, 1.1f * w, h * 1.5f)
+                  canvas.drawOval(rect, p)
+                  p.shader = null
+
+                  // lake (level 5)
+                  val lake = lvl >= 5
+                  p.color = if (lake) 0xFF3FA9D8.toInt() else 0x18FFFFFF
+                  rect.set(w * 0.64f, h * 0.80f, w * 0.90f, h * 0.91f)
+                  canvas.drawOval(rect, p)
+                  if (lake) {
+                      p.color = 0x66FFFFFF
+                      for (k in 0 until 3) {
+                          val sx = w * (0.67f + 0.2f * ((t * 2f + k * 0.33f) % 1f))
+                          canvas.drawRect(sx, h * (0.83f + 0.02f * k), sx + w * 0.035f, h * (0.835f + 0.02f * k), p)
+                      }
+                  }
+
+                  // forest (level 3): grows with the level
+                  val n = if (lvl >= 3) minOf(3 + lvl, treeX.size) else 0
+                  for (i in treeX.indices) {
+                      val base = h * (0.80f + 0.018f * (i % 3))
+                      val size = h * (0.14f + 0.03f * (i % 4))
+                      if (i < n) tree(canvas, treeX[i] * w, base, size, 0xFF1F9E6B.toInt(), w)
+                      else if (lvl < 3 && i < 3) tree(canvas, treeX[i] * w, base, size, 0, w)
+                  }
+
+                  // campfire (always) with glow and flicker
+                  val fx = w * 0.44f
+                  val fy = h * 0.84f
+                  canvas.save()
+                  canvas.translate(fx, fy)
+                  p.shader = fireGlow
+                  canvas.drawCircle(0f, 0f, w * 0.13f, p)
+                  p.shader = null
+                  canvas.restore()
+                  val fl = 1f + 0.12f * Math.sin(2.0 * Math.PI * t * 7.0).toFloat()
+                  flame(canvas, fx, fy, h * 0.13f * fl, w * 0.032f, 0xFFFF9F43.toInt())
+                  flame(canvas, fx, fy, h * 0.075f * fl, w * 0.018f, 0xFFFFE08A.toInt())
+                  p.color = 0xFF4B5563.toInt()
+                  for (k in -1..1) {
+                      rect.set(fx + k * w * 0.028f - w * 0.012f, fy - h * 0.012f, fx + k * w * 0.028f + w * 0.012f, fy + h * 0.014f)
+                      canvas.drawOval(rect, p)
+                  }
+
+                  // a sapling that grows with the level
+                  val sx = w * 0.56f
+                  val sy = h * 0.82f
+                  val sc = 0.7f + (if (lvl > 15) 15 else lvl) * 0.07f
+                  p.style = Paint.Style.STROKE
+                  p.strokeCap = Paint.Cap.ROUND
+                  p.strokeWidth = 2.5f * d * sc
+                  p.color = 0xFF8B5E3C.toInt()
+                  canvas.drawLine(sx, sy, sx, sy - h * 0.09f * sc, p)
+                  p.style = Paint.Style.FILL
+                  p.color = 0xFF34D399.toInt()
+                  val top = sy - h * 0.09f * sc
+                  canvas.drawCircle(sx, top, w * 0.024f * sc, p)
+                  canvas.drawCircle(sx - w * 0.02f * sc, top + h * 0.025f * sc, w * 0.018f * sc, p)
+                  canvas.drawCircle(sx + w * 0.02f * sc, top + h * 0.025f * sc, w * 0.018f * sc, p)
               }
           }
           EOF_FILE
